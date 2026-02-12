@@ -1,12 +1,14 @@
 import { supabase } from '@/lib/supabase';
+import { Link } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 // Define what a "Guide" looks like so TypeScript is happy
 type Guide = {
   id: string;
   title: string;
-  summary: string; // We are adding this!
+  summary: string;
+  hero_media_url: string;
 };
 
 export default function HomeScreen() {
@@ -39,20 +41,40 @@ export default function HomeScreen() {
       
       {loading ? (
         <Text>Loading...</Text>
-      ) : guide ? (
+     ) : guide ? (
         // The "Card"
-        <View style={styles.card}>
-          <Text style={styles.label}>FEATURED TRIP</Text>
-          <Text style={styles.title}>{guide.title}</Text>
-          <View style={styles.separator} />
-          <Text style={styles.description}>{guide.summary}</Text>
-        </View>
+        <Link 
+  href={{
+    pathname: '/guide/[id]',
+    params: { id: guide.id }
+  }} 
+  asChild
+>
+          <Pressable style={styles.card as any}>
+             {/* Note: I removed the extra <View> wrapper here! */}
+            
+            {/* The Hero Image */}
+            {guide.hero_media_url && (
+              <Image 
+                source={{ uri: guide.hero_media_url }} 
+                style={styles.image} 
+              />
+            )}
+            
+            <View style={styles.textContainer}>
+              <Text style={styles.label}>FEATURED TRIP</Text>
+              <Text style={styles.title}>{guide.title}</Text>
+              <View style={styles.separator} />
+              <Text style={styles.description}>{guide.summary}</Text>
+            </View>
+          </Pressable>
+        </Link>
       ) : (
         <Text>No guides found.</Text>
       )}
     </View>
   );
-}
+} // <--- This bracket was missing!
 
 const styles = StyleSheet.create({
   container: {
@@ -71,13 +93,21 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: 'white',
     borderRadius: 15,
-    padding: 25,
     width: '100%',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 8,
-    elevation: 5, // Android shadow
+    elevation: 5,
+    overflow: 'hidden', 
+  },
+  image: {
+    width: '100%',
+    height: 200, 
+    resizeMode: 'cover',
+  },
+  textContainer: {
+    padding: 20,
   },
   label: {
     fontSize: 12,
