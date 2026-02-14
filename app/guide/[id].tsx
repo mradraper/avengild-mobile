@@ -1,11 +1,12 @@
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
+import { Codex } from '@/lib/codex';
 import { supabase } from '@/lib/supabase';
+import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-// Define the shape of a "Step"
 type Step = {
   id: string;
   atomic_action: string;
@@ -14,80 +15,129 @@ type Step = {
 };
 
 export default function GuideDetailScreen() {
-  const { id } = useLocalSearchParams();
+  const { id } = useLocalSearchParams<{ id: string }>();
   const [steps, setSteps] = useState<Step[]>([]);
   const [loading, setLoading] = useState(true);
+  
+  // Track completed step IDs
+  const [completedSteps, setCompletedSteps] = useState<Set<string>>(new Set());
 
-  // 1. Get the current theme (Forest or River)
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
 
   useEffect(() => {
-    async function fetchSteps() {
+    async function loadData() {
       if (!id) return;
       
-      const { data, error } = await supabase
-        .from('step_cards')
-        .select('*')
-        .eq('guide_id', id)
-        .order('step_order', { ascending: true });
+      try {
+        // 1. Fetch Steps
+        const { data } = await supabase
+          .from('step_cards')
+          .select('*')
+          .eq('guide_id', id)
+          .order('step_order', { ascending: true });
 
-      if (error) console.error('Error fetching steps:', error);
-      else if (data) setSteps(data);
-      
-      setLoading(false);
+        if (data) setSteps(data);
+
+        // 2. Fetch Progress (Silent fail if anon/offline)
+        try {
+          const progress = await Codex.getGuideProgress(id);
+          if (progress.length > 0) setCompletedSteps(new Set(progress));
+        } catch (e) {
+          console.log('Codex: User is anonymous or offline');
+        }
+
+      } finally {
+        setLoading(false);
+      }
     }
 
-    fetchSteps();
+    loadData();
   }, [id]);
 
-  // Helper to choose the card background color based on mode
-  const cardBackgroundColor = colorScheme === 'dark' ? '#5E3754' : '#ffffff'; // Badlands Dusk vs White
+  const handleStepPress = (stepId: string) => {
+    // 1. Immediate Visual Update (Optimistic)
+    setCompletedSteps(prev => {
+      const next = new Set(prev);
+      if (next.has(stepId)) {
+        next.delete(stepId); // Uncheck
+      } else {
+        next.add(stepId);    // Check
+      }
+      return next;
+    });
+
+    // 2. Save to DB (Fire and Forget)
+    Codex.completeStep(id!, stepId).catch(err => {
+      console.log('Codex Save Failed (Anon User):', err.message);
+      // Optional: We could revert the checkmark here if we wanted to be strict
+    });
+  };
+
+  const cardBackgroundColor = theme.cardBackground;
   const textColor = theme.text;
   const subTextColor = colorScheme === 'dark' ? '#ccc' : '#666';
 
   return (
-    // Dynamic Background (Mist White or River Night)
     <View style={[styles.container, { backgroundColor: theme.background }]}>
-      
-      {/* Dynamic Header */}
       <Stack.Screen 
         options={{ 
           title: 'Itinerary',
           headerStyle: { backgroundColor: theme.background },
-          headerTintColor: theme.tint, // Forest Green or Aurora Mint
-          headerTitleStyle: { fontWeight: 'bold' },
-          headerShadowVisible: false, // Cleaner look
+          headerTintColor: theme.tint,
+          headerShadowVisible: false,
         }} 
       />
 
       {loading ? (
-        // Loading Spinner in Burnished Gold
-        <ActivityIndicator size="large" color="#BC8A2F" style={{ marginTop: 50 }} />
+        <ActivityIndicator size="large" color={theme.tint} style={{ marginTop: 50 }} />
       ) : (
         <FlatList
           data={steps}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
-          renderItem={({ item }) => (
-            
-            // Dynamic Card Style
-            <View style={[styles.stepCard, { backgroundColor: cardBackgroundColor }]}>
-              
-              {/* Step Number Bubble (Brand Tint) */}
-              <View style={[styles.stepNumber, { backgroundColor: theme.tint }]}>
-                <Text style={styles.stepNumberText}>{item.step_order}</Text>
-              </View>
-              
-              <View style={styles.stepContent}>
-                <Text style={[styles.action, { color: textColor }]}>{item.atomic_action}</Text>
-                <Text style={[styles.note, { color: subTextColor }]}>{item.curation_note}</Text>
-              </View>
-            </View>
-          )}
-          ListEmptyComponent={
-            <Text style={[styles.empty, { color: subTextColor }]}>No steps found for this guide.</Text>
-          }
+          renderItem={({ item }) => {
+            const isCompleted = completedSteps.has(item.id);
+
+            return (
+              <TouchableOpacity 
+                activeOpacity={0.7}
+                onPress={() => handleStepPress(item.id)}
+                style={[
+                  styles.stepCard, 
+                  { backgroundColor: cardBackgroundColor },
+                  isCompleted && { opacity: 0.8 } // Dim slightly if done
+                ]}
+              >
+                  {/* DYNAMIC BUBBLE */}
+                  <View style={[
+                    styles.stepNumber, 
+                    { backgroundColor: isCompleted ? '#A9E1A1' : theme.tint }
+                  ]}>
+                    {isCompleted ? (
+                      <Ionicons name="checkmark" size={20} color="#1a1a1a" />
+                    ) : (
+                      <Text style={styles.stepNumberText}>{item.step_order}</Text>
+                    )}
+                  </View>
+                  
+                  <View style={styles.stepContent}>
+                    <Text style={[
+                      styles.action, 
+                      { 
+                        color: textColor,
+                        textDecorationLine: isCompleted ? 'line-through' : 'none',
+                        textDecorationStyle: 'solid',
+                        opacity: isCompleted ? 0.6 : 1
+                      }
+                    ]}>
+                      {item.atomic_action}
+                    </Text>
+                    <Text style={[styles.note, { color: subTextColor }]}>{item.curation_note}</Text>
+                  </View>
+              </TouchableOpacity>
+            );
+          }}
         />
       )}
     </View>
@@ -95,19 +145,13 @@ export default function GuideDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    // Background color is handled dynamically above
-  },
-  listContent: {
-    padding: 16,
-  },
+  container: { flex: 1 },
+  listContent: { padding: 16 },
   stepCard: {
     flexDirection: 'row',
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
-    // Shadows for depth
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
@@ -122,26 +166,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginRight: 12,
   },
-  stepNumberText: {
-    color: '#fff', // Always white text inside the colored bubble
-    fontWeight: 'bold',
-  },
-  stepContent: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  action: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 4,
-  },
-  note: {
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  empty: {
-    textAlign: 'center',
-    marginTop: 50,
-    fontSize: 16,
-  },
+  stepNumberText: { color: '#fff', fontWeight: 'bold' },
+  stepContent: { flex: 1, justifyContent: 'center' },
+  action: { fontSize: 16, fontWeight: 'bold', marginBottom: 4 },
+  note: { fontSize: 14, lineHeight: 20 },
 });
