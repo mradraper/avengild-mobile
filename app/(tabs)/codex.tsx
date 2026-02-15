@@ -2,8 +2,8 @@ import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { supabase } from '@/lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
-import { Link } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { Link, useFocusEffect } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 
 type CodexEntry = {
@@ -27,52 +27,66 @@ export default function CodexScreen() {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
 
-  useEffect(() => {
-    async function fetchCodex() {
-      // 1. Check User
-      const { data: { user } } = await supabase.auth.getUser();
-      setUser(user);
-
-      if (!user) {
-        setLoading(false);
-        return;
-      }
-
-      // 2. Fetch Entries
-      const { data, error } = await supabase
-        .from('codex_entries')
-        .select(`
+  // CORE FETCH FUNCTION
+  async function fetchCodex(userId: string) {
+    const { data, error } = await supabase
+      .from('codex_entries')
+      .select(`
+        id,
+        status,
+        guide:guides (
           id,
-          status,
-          guide:guides (
-            id,
-            title,
-            summary,
-            hero_media_url
-          )
-        `)
-        .eq('user_id', user.id);
+          title,
+          summary,
+          hero_media_url
+        )
+      `)
+      .eq('user_id', userId);
 
-      if (error) console.error(error);
-      
-      // 3. Map Data safely to satisfy TypeScript
+    if (error) {
+      console.error(error);
+    } else {
       const mockedData: CodexEntry[] = (data || []).map((item: any) => ({
         id: item.id,
         status: item.status,
-        // Handle case where Supabase returns guide as an array or object
         guide: Array.isArray(item.guide) ? item.guide[0] : item.guide,
-        total_steps: 7,       // Placeholder
-        completed_steps: 2,   // Placeholder
+        total_steps: 7,       
+        completed_steps: 2,   
       }));
-
       setEntries(mockedData);
-      setLoading(false);
     }
+    setLoading(false);
+  }
 
-    fetchCodex();
-  }, []);
+  // FOCUS EFFECT: Runs every time you tap the tab
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
 
-  // Icon Color: Use Text color (White in dark mode) instead of generic grey
+      async function checkSession() {
+        setLoading(true);
+        // 1. Explicitly Ask: "Who is here?"
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (!isActive) return;
+
+        if (session?.user) {
+          // If we found a user, save it and fetch data
+          setUser(session.user);
+          fetchCodex(session.user.id);
+        } else {
+          // If no user found
+          setUser(null);
+          setLoading(false);
+        }
+      }
+
+      checkSession();
+
+      return () => { isActive = false; };
+    }, [])
+  );
+
   const iconColor = theme.text; 
 
   return (
@@ -82,19 +96,22 @@ export default function CodexScreen() {
       </View>
 
       {loading ? (
-        <ActivityIndicator color={theme.tint} />
-      ) : !user ? (
-        // EMPTY STATE: NOT LOGGED IN
         <View style={styles.center}>
-          {/* Updated Icon Color for better contrast */}
+            <ActivityIndicator size="large" color={theme.tint} />
+        </View>
+      ) : !user ? (
+        // LOCKED STATE
+        <View style={styles.center}>
           <Ionicons name="lock-closed-outline" size={48} color={iconColor} />
           <Text style={[styles.emptyText, { color: theme.text }]}>Sign in to view your history.</Text>
-          <Text style={[styles.subText, { color: theme.text, opacity: 0.7 }]}>
-            Go to the Profile tab to log in.
-          </Text>
+          <Link href="/(tabs)/profile" asChild>
+             <Pressable style={{ marginTop: 20, padding: 10, backgroundColor: theme.cardBackground, borderRadius: 8 }}>
+                <Text style={{ color: theme.tint, fontWeight: 'bold' }}>Go to Profile</Text>
+             </Pressable>
+          </Link>
         </View>
       ) : entries.length === 0 ? (
-        // EMPTY STATE: NO TRIPS
+        // EMPTY STATE (Logged in, but no trips)
         <View style={styles.center}>
           <Ionicons name="compass-outline" size={48} color={iconColor} />
           <Text style={[styles.emptyText, { color: theme.text }]}>You haven't started any trips yet.</Text>
@@ -126,8 +143,7 @@ export default function CodexScreen() {
                 <View style={styles.progressContainer}>
                     <View style={[styles.progressBar, { width: '30%', backgroundColor: '#BC8A2F' }]} />
                 </View>
-                <Text style={styles.progressText}>2 / 7 Steps Complete</Text>
-
+                <Text style={styles.progressText}>In Progress</Text>
               </Pressable>
             </Link>
           )}
@@ -144,7 +160,6 @@ const styles = StyleSheet.create({
   list: { paddingHorizontal: 20 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   emptyText: { fontSize: 18, fontWeight: 'bold', marginTop: 10 },
-  subText: { marginTop: 8, fontSize: 14 },
   
   card: {
     borderRadius: 12,

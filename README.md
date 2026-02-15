@@ -32,7 +32,7 @@ Avengild uses a custom design system inspired by the Edmonton River Valley and t
 
 Full specifications can be found in `avengild-core/BRAND_GUIDE.md`.
 
-### Phase 4: The Codex (Memory)
+### Phase 4: The Codex (Feb 14, 2026)
 - **Interactive Checklists:** Users can tap steps to mark them as complete.
 - **Quest Log (Codex Tab):** A dedicated tab that tracks "Started" vs. "Completed" guides.
 - **Optimistic UI:** Checkmarks update instantly for a snappy feel, syncing to Supabase in the background.
