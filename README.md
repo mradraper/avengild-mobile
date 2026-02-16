@@ -38,3 +38,9 @@ Full specifications can be found in `avengild-core/BRAND_GUIDE.md`.
 - **Optimistic UI:** Checkmarks update instantly for a snappy feel, syncing to Supabase in the background.
 - **Data Persistence:** Progress is saved to `step_progress` table (requires auth).
 - **Smart Empty States:** The Codex handles "Not Logged In" and "No Trips Started" scenarios gracefully.
+
+### 🛡️ Guilds & Social (Phase 5)  (Feb 15, 2026)
+- **Guild Hall:** Implemented dynamic guild spaces with dedicated Roster, Board, and Chat tabs.
+- **Role-Based Access:** Automated "Guild Master" assignment upon guild creation via PostgreSQL triggers.
+- **Identity System:** Established a "Bridge" between Auth users and Public profiles to ensure member names and avatars render correctly across the social layer.
+- **Bulletin Board:** Laid the groundwork for "Guide Syndication," allowing users to pin content to specific Guild Halls.
