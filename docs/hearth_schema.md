@@ -47,3 +47,11 @@ We updated the `guides` table policy to respect the Airlock. A user can now `SEL
     and gm.user_id = auth.uid()
   )
 )
+
+---
+
+## 3. Performance & Indexing
+To support future search/filtering features, the following indices were created:
+- `idx_guild_events_guild_id`: Fast lookup of events per guild.
+- `idx_guild_events_start_time`: Fast chronological sorting of the Hearth feed.
+- `idx_guide_access_lookup`: Instant verification of permission rights.
