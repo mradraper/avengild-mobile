@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
 import { Link, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 type CodexEntry = {
   id: string;
@@ -65,17 +65,14 @@ export default function CodexScreen() {
 
       async function checkSession() {
         setLoading(true);
-        // 1. Explicitly Ask: "Who is here?"
         const { data: { session } } = await supabase.auth.getSession();
         
         if (!isActive) return;
 
         if (session?.user) {
-          // If we found a user, save it and fetch data
           setUser(session.user);
           fetchCodex(session.user.id);
         } else {
-          // If no user found
           setUser(null);
           setLoading(false);
         }
@@ -133,17 +130,28 @@ export default function CodexScreen() {
               asChild
             >
               <Pressable style={[styles.card, { backgroundColor: theme.cardBackground }]}>
-                <View style={styles.cardHeader}>
-                    <Text style={[styles.title, { color: theme.text }]}>{item.guide.title}</Text>
-                    <View style={styles.badge}>
-                        <Text style={styles.badgeText}>{item.status.toUpperCase()}</Text>
+                {/* HERO IMAGE */}
+                {item.guide.hero_media_url && (
+                    <Image 
+                        source={{ uri: item.guide.hero_media_url }} 
+                        style={styles.cardImage}
+                        resizeMode="cover"
+                    />
+                )}
+                
+                <View style={styles.cardContent}>
+                    <View style={styles.cardHeader}>
+                        <Text style={[styles.title, { color: theme.text }]}>{item.guide.title}</Text>
+                        <View style={styles.badge}>
+                            <Text style={styles.badgeText}>{item.status.toUpperCase()}</Text>
+                        </View>
                     </View>
-                </View>
 
-                <View style={styles.progressContainer}>
-                    <View style={[styles.progressBar, { width: '30%', backgroundColor: '#BC8A2F' }]} />
+                    <View style={styles.progressContainer}>
+                        <View style={[styles.progressBar, { width: '30%', backgroundColor: '#BC8A2F' }]} />
+                    </View>
+                    <Text style={styles.progressText}>In Progress</Text>
                 </View>
-                <Text style={styles.progressText}>In Progress</Text>
               </Pressable>
             </Link>
           )}
@@ -163,13 +171,21 @@ const styles = StyleSheet.create({
   
   card: {
     borderRadius: 12,
-    padding: 16,
     marginBottom: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 2,
+    overflow: 'hidden', // Ensures image stays inside rounded corners
+  },
+  cardImage: {
+    width: '100%',
+    height: 150,
+    backgroundColor: '#eee',
+  },
+  cardContent: {
+    padding: 16,
   },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   title: { fontSize: 18, fontWeight: 'bold' },

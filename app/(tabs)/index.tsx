@@ -1,7 +1,7 @@
 import { useColorScheme } from '@/components/useColorScheme';
-import Colors from '@/constants/Colors'; // Import your new Palette
+import Colors from '@/constants/Colors';
 import { supabase } from '@/lib/supabase';
-import { Link } from 'expo-router';
+import { useRouter } from 'expo-router'; // <--- NEW IMPORT
 import { useEffect, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -15,10 +15,10 @@ type Guide = {
 export default function HomeScreen() {
   const [guide, setGuide] = useState<Guide | null>(null);
   const [loading, setLoading] = useState(true);
+  const router = useRouter(); // <--- Initialize Router
   
-  // Ask the phone: "Are we in Dark Mode?"
   const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light']; // Load the correct palette
+  const theme = Colors[colorScheme ?? 'light'];
 
   useEffect(() => {
     async function fetchGuide() {
@@ -28,9 +28,11 @@ export default function HomeScreen() {
         .limit(1)
         .single();
 
-      if (error) console.error('Error:', error);
-      else setGuide(data);
-      
+      if (error) {
+        console.error('Error fetching guide:', error);
+      } else {
+        setGuide(data);
+      }
       setLoading(false);
     }
 
@@ -38,37 +40,43 @@ export default function HomeScreen() {
   }, []);
 
   return (
-    // Dynamic Background Color (Mist White or River Night)
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       
-      {/* Dynamic Text Color */}
       <Text style={[styles.header, { color: theme.text }]}>Avengild Discovery</Text>
       
       {loading ? (
-        <Text style={{ color: theme.text }}>Loading...</Text>
+        <Text style={{ color: theme.text, fontFamily: 'Chivo_400Regular' }}>Loading...</Text>
       ) : guide ? (
-        <Link 
-          href={{ pathname: '/guide/[id]', params: { id: guide.id } }} 
-          asChild
+        // REPLACED <LINK> WITH DIRECT ONPRESS
+        <Pressable 
+          style={({ pressed }) => [
+            styles.card, 
+            { 
+              backgroundColor: theme.cardBackground,
+              opacity: pressed ? 0.9 : 1 // Add subtle feedback
+            }
+          ]}
+          onPress={() => router.push({ pathname: '/guide/[id]', params: { id: guide.id } })}
         >
-          <Pressable style={styles.card}>
-            {guide.hero_media_url && (
-              <Image 
-                source={{ uri: guide.hero_media_url }} 
-                style={styles.image} 
-              />
-            )}
-            
-            <View style={styles.textContainer}>
-              {/* BRAND MOMENT: The Gold Label */}
-              <Text style={styles.label}>FEATURED TRIP</Text>
-              
-              <Text style={styles.title}>{guide.title}</Text>
-              <View style={styles.separator} />
-              <Text style={styles.description}>{guide.summary}</Text>
+          {guide.hero_media_url ? (
+            <Image 
+              source={{ uri: guide.hero_media_url }} 
+              style={styles.image} 
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={[styles.image, { justifyContent: 'center', alignItems: 'center' }]}>
+              <Text style={{ color: '#fff' }}>No Image</Text>
             </View>
-          </Pressable>
-        </Link>
+          )}
+          
+          <View style={styles.textContainer}>
+            <Text style={styles.label}>FEATURED TRIP</Text>
+            <Text style={[styles.title, { color: theme.text }]}>{guide.title}</Text>
+            <View style={styles.separator} />
+            <Text style={[styles.description, { color: theme.text }]}>{guide.summary}</Text>
+          </View>
+        </Pressable>
       ) : (
         <Text style={{ color: theme.text }}>No guides found.</Text>
       )}
@@ -84,52 +92,53 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   header: {
-    fontSize: 24,
-    fontWeight: 'bold',
+    fontSize: 28,
+    fontFamily: 'Chivo_700Bold', 
     marginBottom: 30,
-    // Color is now handled dynamically in the component
+    textAlign: 'center',
   },
   card: {
-    backgroundColor: 'white', // We keep cards white for now for contrast
-    borderRadius: 15,
+    borderRadius: 16,
     width: '100%',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
     shadowRadius: 8,
-    elevation: 5,
+    elevation: 6,
     overflow: 'hidden', 
   },
   image: {
     width: '100%',
-    height: 200, 
-    resizeMode: 'cover',
+    height: 250, 
+    backgroundColor: '#2D3748', // You should at least see this grey box now
   },
   textContainer: {
-    padding: 20,
+    padding: 24,
   },
   label: {
     fontSize: 12,
-    fontWeight: '700',
-    color: '#BC8A2F', // BURNISHED GOLD (The Guild)
-    marginBottom: 5,
+    fontFamily: 'Chivo_700Bold',
+    color: '#BC8A2F',
+    marginBottom: 8,
+    letterSpacing: 2,
     textTransform: 'uppercase',
-    letterSpacing: 1,
   },
   title: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#1a1a1a', // Keep card text dark (since card bg is white)
-    marginBottom: 10,
+    fontSize: 24,
+    fontFamily: 'Chivo_700Bold', 
+    marginBottom: 12,
+    lineHeight: 32,
   },
   separator: {
-    height: 1,
-    backgroundColor: '#eee',
-    marginVertical: 10,
+    height: 2,
+    backgroundColor: '#BC8A2F',
+    width: 40,
+    marginBottom: 16,
   },
   description: {
     fontSize: 16,
-    lineHeight: 24,
-    color: '#444',
+    fontFamily: 'Chivo_400Regular',
+    lineHeight: 26,
+    opacity: 0.9,
   },
 });

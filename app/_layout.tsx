@@ -1,3 +1,4 @@
+import { useColorScheme } from '@/components/useColorScheme';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { useFonts } from 'expo-font';
@@ -6,7 +7,12 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import 'react-native-reanimated';
 
-import { useColorScheme } from '@/components/useColorScheme';
+// NEW: Import Chivo fonts
+import {
+  Chivo_400Regular,
+  Chivo_700Bold,
+  Chivo_900Black
+} from '@expo-google-fonts/chivo';
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -24,6 +30,9 @@ SplashScreen.preventAutoHideAsync();
 export default function RootLayout() {
   const [loaded, error] = useFonts({
     SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
+    Chivo_400Regular,
+    Chivo_700Bold,
+    Chivo_900Black,
     ...FontAwesome.font,
   });
 
@@ -50,7 +59,19 @@ function RootLayoutNav() {
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
+      <Stack
+        screenOptions={{
+          // Apply Chivo globally to all Headers
+          headerTitleStyle: {
+            fontFamily: 'Chivo_900Black', // Heavy font
+            fontSize: 20, 
+            // Removed 'textTransform' and 'letterSpacing' (Fixes the error)
+          },
+          headerBackTitleStyle: {
+            fontFamily: 'Chivo_400Regular', // Soft back button
+          }
+        }}
+      >
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
       </Stack>

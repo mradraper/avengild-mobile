@@ -27,10 +27,11 @@ type HearthItem = {
   id: string;
   timestamp: string;
   poster: { full_name: string } | null;
-  poster_id: string; // Needed for permission check
+  poster_id: string;
   title: string;
   subtitle: string;
   guide_id?: string;
+  image_url?: string | null; // <--- NEW FIELD
   is_pinned?: boolean;
 };
 
@@ -127,27 +128,30 @@ export default function GuildScreen() {
   async function fetchHearth() {
     if (!id) return;
 
-    // A. Fetch Ideas
+    // A. Fetch "Ideas" (Shared Guides)
+    // We get the hero_media_url here
     const { data: ideas } = await supabase
       .from('guide_access')
       .select(`
         id, granted_at, granted_by,
-        guide:guides(id, title, summary, difficulty_level),
+        guide:guides(id, title, summary, difficulty_level, hero_media_url),
         poster:profiles!guide_access_to_profiles_fkey(full_name)
       `)
       .eq('guild_id', id);
 
-    // B. Fetch Plans
+    // B. Fetch "Plans" (Events)
+    // UPDATE: We added 'guide:guides(hero_media_url)' here too!
     const { data: plans } = await supabase
       .from('guild_events')
       .select(`
         id, start_time, title, location_name, guide_id, created_by,
-        poster:profiles!guild_events_created_by_fkey(full_name)
+        guide:guides(hero_media_url),
+        poster:profiles!guild_events_to_profiles_fkey(full_name)
       `)
       .eq('guild_id', id)
       .eq('is_cancelled', false);
 
-    // C. Merge
+    // C. Merge & Sort
     const feed: HearthItem[] = [];
 
     if (ideas) {
@@ -160,7 +164,8 @@ export default function GuildScreen() {
           poster_id: item.granted_by,
           title: item.guide?.title || 'Unknown Guide',
           subtitle: `Suggested Idea • ${item.guide?.difficulty_level || 'Normal'}`,
-          guide_id: item.guide?.id
+          guide_id: item.guide?.id,
+          image_url: item.guide?.hero_media_url // <--- Image from Guide
         });
       });
     }
@@ -175,11 +180,13 @@ export default function GuildScreen() {
           poster_id: item.created_by,
           title: item.title,
           subtitle: `Event • ${new Date(item.start_time).toLocaleDateString()} @ ${item.location_name || 'TBD'}`,
-          guide_id: item.guide_id
+          guide_id: item.guide_id,
+          image_url: item.guide?.hero_media_url // <--- Image from the linked Guide
         });
       });
     }
 
+    // Sort by newest first
     feed.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
     setHearthFeed(feed);
   }
@@ -205,7 +212,17 @@ export default function GuildScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <Stack.Screen options={{ title: guild?.name || 'Guild Hall', headerBackTitle: 'Back' }} />
+      <Stack.Screen 
+        options={{
+          title: 'Guild Hall', 
+          headerTitleStyle: {
+            fontFamily: 'Chivo_900Black', 
+            fontSize: 20, 
+          },
+          headerBackTitle: '',
+          headerTintColor: theme.tint,
+        }} 
+      />
       
       <View style={[styles.header, { backgroundColor: theme.cardBackground }]}>
         <View style={{ padding: 16, alignItems: 'center' }}>
@@ -247,23 +264,34 @@ export default function GuildScreen() {
                     }
                  ]}
                  onPress={() => item.guide_id && router.push({ pathname: '/guide/[id]', params: { id: item.guide_id } })}
-                 onLongPress={() => handleLongPress(item)} // <--- NEW ACTION
+                 onLongPress={() => handleLongPress(item)}
                  delayLongPress={500}
                >
-                 <View style={styles.cardHeader}>
-                   <Text style={[styles.cardTitle, { color: theme.text }]}>{item.title}</Text>
-                   {item.type === 'plan' && <Ionicons name="calendar" size={16} color={theme.tint} />}
-                 </View>
-                 
-                 <Text style={{ color: '#666', marginBottom: 8 }}>{item.subtitle}</Text>
-                 
-                 <View style={styles.cardFooter}>
-                   <Text style={styles.posterText}>
-                     {item.type === 'idea' ? 'Shared by' : 'Organized by'} {item.poster?.full_name || 'Member'}
-                   </Text>
-                   <Text style={styles.timeText}>
-                      {new Date(item.timestamp).toLocaleDateString()}
-                   </Text>
+                 {/* NEW: HERO IMAGE BANNER */}
+                 {item.image_url && (
+                   <Image 
+                     source={{ uri: item.image_url }} 
+                     style={styles.cardImage}
+                     resizeMode="cover"
+                   />
+                 )}
+
+                 <View style={styles.cardContent}>
+                   <View style={styles.cardHeader}>
+                     <Text style={[styles.cardTitle, { color: theme.text }]}>{item.title}</Text>
+                     {item.type === 'plan' && <Ionicons name="calendar" size={16} color={theme.tint} />}
+                   </View>
+                   
+                   <Text style={{ color: '#666', marginBottom: 8 }}>{item.subtitle}</Text>
+                   
+                   <View style={styles.cardFooter}>
+                     <Text style={styles.posterText}>
+                       {item.type === 'idea' ? 'Shared by' : 'Organized by'} {item.poster?.full_name || 'Member'}
+                     </Text>
+                     <Text style={styles.timeText}>
+                        {new Date(item.timestamp).toLocaleDateString()}
+                     </Text>
+                   </View>
                  </View>
                </Pressable>
              )}
@@ -305,18 +333,51 @@ export default function GuildScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { paddingBottom: 0, borderBottomWidth: 1, borderBottomColor: '#eee' },
-  guildName: { fontSize: 20, fontWeight: 'bold' },
+  guildName: { 
+    fontSize: 28, 
+    fontFamily: 'Chivo_900Black', // <--- This calls the heavy weight
+    fontWeight: 'normal', // Reset bold so the font file handles it
+    marginBottom: 4,
+    textTransform: 'uppercase', // Optional: Makes it look more like a sign
+    letterSpacing: 1
+  },
+  
   tabBar: { flexDirection: 'row' },
   tab: { flex: 1, alignItems: 'center', paddingVertical: 12, borderBottomWidth: 3, borderBottomColor: 'transparent' },
   tabText: { fontSize: 14, fontWeight: 'bold', marginTop: 4 },
+  
   content: { flex: 1 },
   placeholderContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 40 },
-  card: { padding: 16, borderRadius: 12, marginBottom: 12, marginHorizontal: 4, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 3 },
+  
+  // CARD STYLES
+  card: { 
+    borderRadius: 12, 
+    marginBottom: 12, 
+    marginHorizontal: 4, 
+    elevation: 2, 
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 1 }, 
+    shadowOpacity: 0.1, 
+    shadowRadius: 3, 
+    overflow: 'hidden' 
+  },
+  cardImage: { 
+    width: '100%', 
+    height: 150, 
+    backgroundColor: '#eee' // Grey placeholder while loading
+  }, 
+  cardContent: { 
+    padding: 16 
+  },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
   cardTitle: { fontSize: 16, fontWeight: 'bold' },
   cardFooter: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#f0f0f0' },
+  
+  // TEXT STYLES
   posterText: { fontSize: 12, color: '#999', fontStyle: 'italic' },
   timeText: { fontSize: 12, color: '#999' },
+  
+  // MEMBER CARD STYLES
   memberCard: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 12, marginBottom: 10 },
   avatar: { width: 40, height: 40, borderRadius: 20, marginRight: 12 },
   memberName: { fontSize: 16, fontWeight: 'bold' },

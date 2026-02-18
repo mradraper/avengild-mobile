@@ -3,7 +3,6 @@ import { Link, Tabs } from 'expo-router';
 import React from 'react';
 import { Pressable } from 'react-native';
 
-import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 
@@ -22,8 +21,12 @@ export default function TabLayout() {
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
-        // Disable the static render of the header on web
-        headerShown: useClientOnlyValue(false, true),
+        headerShown: false, // We hide tab headers to let the Stack handle them (or custom headers)
+        tabBarLabelStyle: {
+          fontFamily: 'Chivo_700Bold', // Bold labels
+          fontSize: 10,
+          marginBottom: 4
+        }
       }}>
       
       {/* 1. DISCOVERY (Home) */}
