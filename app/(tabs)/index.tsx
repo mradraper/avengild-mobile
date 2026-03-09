@@ -1,9 +1,9 @@
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { supabase } from '@/lib/supabase';
-import { useRouter } from 'expo-router'; // <--- NEW IMPORT
+import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 type Guide = {
   id: string;
@@ -13,31 +13,65 @@ type Guide = {
 };
 
 export default function HomeScreen() {
-  const [guide, setGuide] = useState<Guide | null>(null);
+  // 1. STATE: Now holds an array of guides instead of just one
+  const [guides, setGuides] = useState<Guide[]>([]);
   const [loading, setLoading] = useState(true);
-  const router = useRouter(); // <--- Initialize Router
+  const router = useRouter(); 
   
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
 
   useEffect(() => {
-    async function fetchGuide() {
+    async function fetchGuides() {
+      // 2. QUERY: Removed limit(1) and single() to fetch all guides
       const { data, error } = await supabase
         .from('guides')
         .select('*')
-        .limit(1)
-        .single();
+        .order('created_at', { ascending: false });
 
       if (error) {
-        console.error('Error fetching guide:', error);
+        console.error('Error fetching guides:', error);
       } else {
-        setGuide(data);
+        setGuides(data || []);
       }
       setLoading(false);
     }
 
-    fetchGuide();
+    fetchGuides();
   }, []);
+
+  // Extracted the card into a render function for the FlatList
+  const renderGuide = ({ item: guide }: { item: Guide }) => (
+    <Pressable 
+      style={({ pressed }) => [
+        styles.card, 
+        { 
+          backgroundColor: theme.cardBackground,
+          opacity: pressed ? 0.9 : 1 
+        }
+      ]}
+      onPress={() => router.push({ pathname: '/guide/[id]', params: { id: guide.id } })}
+    >
+      {guide.hero_media_url ? (
+        <Image 
+          source={{ uri: guide.hero_media_url }} 
+          style={styles.image} 
+          resizeMode="cover"
+        />
+      ) : (
+        <View style={[styles.image, { justifyContent: 'center', alignItems: 'center' }]}>
+          <Text style={{ color: '#fff' }}>No Image</Text>
+        </View>
+      )}
+      
+      <View style={styles.textContainer}>
+        <Text style={styles.label}>DISCOVER</Text>
+        <Text style={[styles.title, { color: theme.text }]}>{guide.title}</Text>
+        <View style={styles.separator} />
+        <Text style={[styles.description, { color: theme.text }]}>{guide.summary}</Text>
+      </View>
+    </Pressable>
+  );
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -45,40 +79,19 @@ export default function HomeScreen() {
       <Text style={[styles.header, { color: theme.text }]}>Avengild Discovery</Text>
       
       {loading ? (
-        <Text style={{ color: theme.text, fontFamily: 'Chivo_400Regular' }}>Loading...</Text>
-      ) : guide ? (
-        // REPLACED <LINK> WITH DIRECT ONPRESS
-        <Pressable 
-          style={({ pressed }) => [
-            styles.card, 
-            { 
-              backgroundColor: theme.cardBackground,
-              opacity: pressed ? 0.9 : 1 // Add subtle feedback
-            }
-          ]}
-          onPress={() => router.push({ pathname: '/guide/[id]', params: { id: guide.id } })}
-        >
-          {guide.hero_media_url ? (
-            <Image 
-              source={{ uri: guide.hero_media_url }} 
-              style={styles.image} 
-              resizeMode="cover"
-            />
-          ) : (
-            <View style={[styles.image, { justifyContent: 'center', alignItems: 'center' }]}>
-              <Text style={{ color: '#fff' }}>No Image</Text>
-            </View>
-          )}
-          
-          <View style={styles.textContainer}>
-            <Text style={styles.label}>FEATURED TRIP</Text>
-            <Text style={[styles.title, { color: theme.text }]}>{guide.title}</Text>
-            <View style={styles.separator} />
-            <Text style={[styles.description, { color: theme.text }]}>{guide.summary}</Text>
-          </View>
-        </Pressable>
+        <Text style={{ color: theme.text, fontFamily: 'Chivo_400Regular', textAlign: 'center' }}>Loading...</Text>
       ) : (
-        <Text style={{ color: theme.text }}>No guides found.</Text>
+        // 3. LAYOUT: Using FlatList for smooth scrolling
+        <FlatList
+          data={guides}
+          keyExtractor={(item) => item.id}
+          renderItem={renderGuide}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          ListEmptyComponent={
+            <Text style={{ color: theme.text, textAlign: 'center' }}>No guides found.</Text>
+          }
+        />
       )}
     </View>
   );
@@ -87,15 +100,18 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
+    paddingTop: 40, 
+    paddingHorizontal: 20,
   },
   header: {
     fontSize: 28,
     fontFamily: 'Chivo_700Bold', 
-    marginBottom: 30,
+    marginBottom: 20,
     textAlign: 'center',
+  },
+  listContent: {
+    paddingBottom: 40,
+    gap: 24, // Adds spacing between the cards
   },
   card: {
     borderRadius: 16,
@@ -110,7 +126,7 @@ const styles = StyleSheet.create({
   image: {
     width: '100%',
     height: 250, 
-    backgroundColor: '#2D3748', // You should at least see this grey box now
+    backgroundColor: '#2D3748', 
   },
   textContainer: {
     padding: 24,

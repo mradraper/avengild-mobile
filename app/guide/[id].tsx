@@ -1,18 +1,18 @@
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { Codex } from '@/lib/codex';
+import type { Guide, PhaseWithSteps } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-
-type Step = {
-  id: string;
-  atomic_action: string;
-  curation_note: string;
-  step_order: number;
-};
+import { ActivityIndicator, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { BirdsEyeHeader } from '@/components/guide/BirdsEyeHeader';
+import { FreeformView } from '@/components/guide/FreeformView';
+import { MediaHeader } from '@/components/guide/MediaHeader';
+import { PhaseNavigator } from '@/components/guide/PhaseNavigator';
+import { SequentialView } from '@/components/guide/SequentialView';
+import { ShareToHearthModal } from '@/components/guide/ShareToHearthModal';
 
 type UserGuild = {
   guild_id: string;
@@ -21,109 +21,134 @@ type UserGuild = {
 
 export default function GuideDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [steps, setSteps] = useState<Step[]>([]);
+  const colorScheme = useColorScheme();
+  const theme = Colors[colorScheme ?? 'dark'];
+
+  const [guide, setGuide] = useState<Guide | null>(null);
+  const [phases, setPhases] = useState<PhaseWithSteps[]>([]);
   const [loading, setLoading] = useState(true);
-  
-  // Share Modal State
-  const [showShareModal, setShowShareModal] = useState(false);
-  const [userGuilds, setUserGuilds] = useState<UserGuild[]>([]);
-  
-  // Track completed step IDs
+
+  const [activePhaseIndex, setActivePhaseIndex] = useState(0);
+  const [sequentialStepIndex, setSequentialStepIndex] = useState(0);
   const [completedSteps, setCompletedSteps] = useState<Set<string>>(new Set());
 
-  const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [userGuilds, setUserGuilds] = useState<UserGuild[]>([]);
 
   useEffect(() => {
-    loadData();
-    fetchUserGuilds(); // Pre-load guilds for the share menu
+    if (id) {
+      loadGuideData();
+      fetchUserGuilds();
+    }
   }, [id]);
 
-  async function loadData() {
-    if (!id) return;
-    
+  async function loadGuideData() {
     try {
-      // 1. Fetch Steps
-      const { data } = await supabase
-        .from('step_cards')
+      // Fetch guide metadata
+      const { data: guideData } = await supabase
+        .from('guides')
         .select('*')
+        .eq('id', id)
+        .single();
+
+      if (guideData) setGuide(guideData);
+
+      // Fetch phases with their step_cards, ordered by phase_index and step_index
+      const { data: phasesData } = await supabase
+        .from('phases')
+        .select('*, step_cards(*)')
         .eq('guide_id', id)
-        .order('step_order', { ascending: true });
+        .order('phase_index', { ascending: true });
 
-      if (data) setSteps(data);
-
-      // 2. Fetch Progress (Silent fail if anon/offline)
-      try {
-        const progress = await Codex.getGuideProgress(id);
-        if (progress.length > 0) setCompletedSteps(new Set(progress));
-      } catch (e) {
-        console.log('Codex: User is anonymous or offline');
+      if (phasesData) {
+        // Sort step_cards within each phase by step_index
+        const sorted = phasesData.map((phase) => ({
+          ...phase,
+          step_cards: (phase.step_cards ?? []).sort(
+            (a: any, b: any) => a.step_index - b.step_index,
+          ),
+        }));
+        setPhases(sorted);
       }
 
+      // Load Codex progress (bridge: step_progress table)
+      try {
+        const progress = await Codex.getGuideProgress(id!);
+        if (progress.length > 0) setCompletedSteps(new Set(progress));
+      } catch {
+        // Anonymous or offline user — silently ignore
+      }
     } finally {
       setLoading(false);
     }
   }
 
-  // Fetch the list of guilds the user belongs to
   async function fetchUserGuilds() {
+    const { data: { user } } = await supabase.auth.getUser();
     const { data } = await supabase
       .from('guild_members')
       .select('guild_id, guild:guilds(name)')
-      .eq('user_id', (await supabase.auth.getUser()).data.user?.id);
-      
-    if (data) setUserGuilds(data as any);
+      .eq('user_id', user?.id);
+
+    if (data) setUserGuilds(data as UserGuild[]);
   }
 
-  // --- ACTIONS ---
+  const handleStepToggle = (stepId: string) => {
+    // Capture the current state before the toggle to determine the correct
+    // Codex action: completing a new step, or reverting a previously done one.
+    const wasCompleted = completedSteps.has(stepId);
 
-  const handleStepPress = (stepId: string) => {
-    setCompletedSteps(prev => {
+    setCompletedSteps((prev) => {
       const next = new Set(prev);
       if (next.has(stepId)) next.delete(stepId);
       else next.add(stepId);
       return next;
     });
 
-    Codex.completeStep(id!, stepId).catch(err => {
-      console.log('Codex Save Failed (Anon User):', err.message);
-    });
-  };
-
-  const handleShareToGuild = async (guildId: string, guildName: string) => {
-    if (!id) return;
-
-    // The "Airlock" Insert
-    const { error } = await supabase
-      .from('guide_access')
-      .insert({
-        guide_id: id,
-        guild_id: guildId,
-        granted_by: (await supabase.auth.getUser()).data.user?.id
+    if (wasCompleted) {
+      Codex.uncompleteStep(id!, stepId).catch((err) => {
+        console.log('Codex uncomplete failed (anonymous user):', err.message);
       });
-
-    if (error) {
-      if (error.code === '23505') { // Unique constraint violation
-        Alert.alert('Already Posted', `This guide is already on the ${guildName} Hearth.`);
-      } else {
-        Alert.alert('Error', error.message);
-      }
     } else {
-      Alert.alert('Success', `Posted to ${guildName}!`);
-      setShowShareModal(false);
+      Codex.completeStep(id!, stepId).catch((err) => {
+        console.log('Codex save failed (anonymous user):', err.message);
+      });
     }
   };
 
-  // --- STYLES ---
-  const cardBackgroundColor = theme.cardBackground;
-  const textColor = theme.text;
-  const subTextColor = colorScheme === 'dark' ? '#ccc' : '#666';
+  const handlePhaseSelect = (index: number) => {
+    setActivePhaseIndex(index);
+    setSequentialStepIndex(0);
+  };
+
+  const handleBirdsEyeStepSelect = (phaseIndex: number, stepIndex: number) => {
+    setActivePhaseIndex(phaseIndex);
+    setSequentialStepIndex(stepIndex);
+  };
+
+  if (loading) {
+    return (
+      <View style={[styles.centered, { backgroundColor: theme.background }]}>
+        <Stack.Screen options={{ title: 'Guide', headerStyle: { backgroundColor: theme.background }, headerTintColor: theme.tint, headerShadowVisible: false }} />
+        <ActivityIndicator size="large" color={theme.tint} />
+      </View>
+    );
+  }
+
+  const activePhase = phases[activePhaseIndex] ?? null;
+  const activeSteps = activePhase?.step_cards ?? [];
+  const isSequential = activePhase?.execution_mode === 'Sequential';
+
+  // In Sequential mode, expose the active step's first photo as the media URL.
+  // In Freeform mode, no single step is "active", so the hero image always shows.
+  const activeStep = isSequential ? (activeSteps[sequentialStepIndex] ?? null) : null;
+  const activeStepMediaUrl = activeStep?.media_payload?.[0]?.url ?? null;
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <Stack.Screen 
-        options={{ 
-          title: 'Guide Details',
+      <Stack.Screen
+        options={{
+          title: guide?.title ?? 'Guide',
           headerStyle: { backgroundColor: theme.background },
           headerTintColor: theme.tint,
           headerShadowVisible: false,
@@ -131,141 +156,65 @@ export default function GuideDetailScreen() {
             <TouchableOpacity onPress={() => setShowShareModal(true)} style={{ marginRight: 10 }}>
               <Ionicons name="bonfire-outline" size={24} color={theme.tint} />
             </TouchableOpacity>
-          )
-        }} 
+          ),
+        }}
       />
 
-      {loading ? (
-        <ActivityIndicator size="large" color={theme.tint} style={{ marginTop: 50 }} />
-      ) : (
-        <FlatList
-          data={steps}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContent}
-          renderItem={({ item }) => {
-            const isCompleted = completedSteps.has(item.id);
+      {/* Media header — shows hero image by default, crossfades to active step media */}
+      <MediaHeader
+        heroUrl={guide?.hero_media_url ?? null}
+        activeMediaUrl={activeStepMediaUrl}
+      />
 
-            return (
-              <TouchableOpacity 
-                activeOpacity={0.7}
-                onPress={() => handleStepPress(item.id)}
-                style={[
-                  styles.stepCard, 
-                  { backgroundColor: cardBackgroundColor },
-                  isCompleted && { opacity: 0.8 } 
-                ]}
-              >
-                  {/* DYNAMIC BUBBLE */}
-                  <View style={[
-                    styles.stepNumber, 
-                    { backgroundColor: isCompleted ? '#A9E1A1' : theme.tint }
-                  ]}>
-                    {isCompleted ? (
-                      <Ionicons name="checkmark" size={20} color="#1a1a1a" />
-                    ) : (
-                      <Text style={styles.stepNumberText}>{item.step_order}</Text>
-                    )}
-                  </View>
-                  
-                  <View style={styles.stepContent}>
-                    <Text style={[
-                      styles.action, 
-                      { 
-                        color: textColor,
-                        textDecorationLine: isCompleted ? 'line-through' : 'none',
-                        opacity: isCompleted ? 0.6 : 1
-                      }
-                    ]}>
-                      {item.atomic_action}
-                    </Text>
-                    <Text style={[styles.note, { color: subTextColor }]}>{item.curation_note}</Text>
-                  </View>
-              </TouchableOpacity>
-            );
-          }}
+      {/* Bird's Eye collapsible header */}
+      {guide && (
+        <BirdsEyeHeader
+          guide={guide}
+          phases={phases}
+          completedSteps={completedSteps}
+          defaultExpanded={phases.length > 1}
+          onStepSelect={handleBirdsEyeStepSelect}
         />
       )}
 
-      {/* SHARE MODAL */}
-      <Modal
+      {/* Phase tab bar */}
+      {phases.length > 1 && (
+        <PhaseNavigator
+          phases={phases}
+          activePhaseIndex={activePhaseIndex}
+          completedSteps={completedSteps}
+          onPhaseSelect={handlePhaseSelect}
+        />
+      )}
+
+      {/* Step execution area */}
+      {isSequential ? (
+        <SequentialView
+          steps={activeSteps}
+          completedSteps={completedSteps}
+          onStepToggle={handleStepToggle}
+          currentIndex={sequentialStepIndex}
+          onIndexChange={setSequentialStepIndex}
+        />
+      ) : (
+        <FreeformView
+          steps={activeSteps}
+          completedSteps={completedSteps}
+          onStepToggle={handleStepToggle}
+        />
+      )}
+
+      <ShareToHearthModal
         visible={showShareModal}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowShareModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: theme.cardBackground }]}>
-            <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: theme.text }]}>Share to Hearth</Text>
-              <TouchableOpacity onPress={() => setShowShareModal(false)}>
-                <Ionicons name="close" size={24} color={theme.text} />
-              </TouchableOpacity>
-            </View>
-            
-            <Text style={{ color: '#999', marginBottom: 16 }}>
-              Select a Guild to pin this guide to:
-            </Text>
-
-            {userGuilds.length === 0 ? (
-               <Text style={{ color: theme.text, fontStyle: 'italic' }}>You haven't joined any Guilds yet.</Text>
-            ) : (
-              <FlatList 
-                data={userGuilds}
-                keyExtractor={(item) => item.guild_id}
-                renderItem={({ item }) => (
-                  <TouchableOpacity 
-                    style={[styles.guildOption, { borderBottomColor: theme.background }]}
-                    onPress={() => handleShareToGuild(item.guild_id, item.guild.name)}
-                  >
-                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                       <Ionicons name="shield-outline" size={20} color={theme.tint} style={{ marginRight: 12 }} />
-                       <Text style={[styles.guildOptionText, { color: theme.text }]}>{item.guild.name}</Text>
-                    </View>
-                    <Ionicons name="arrow-forward" size={16} color="#999" />
-                  </TouchableOpacity>
-                )}
-              />
-            )}
-          </View>
-        </View>
-      </Modal>
-
+        guideId={id!}
+        userGuilds={userGuilds}
+        onClose={() => setShowShareModal(false)}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  listContent: { padding: 16 },
-  stepCard: {
-    flexDirection: 'row',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  stepNumber: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  stepNumberText: { color: '#fff', fontWeight: 'bold' },
-  stepContent: { flex: 1, justifyContent: 'center' },
-  action: { fontSize: 16, fontWeight: 'bold', marginBottom: 4 },
-  note: { fontSize: 14, lineHeight: 20 },
-
-  // Modal Styles
-  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' },
-  modalContent: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: '50%' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  modalTitle: { fontSize: 20, fontWeight: 'bold' },
-  guildOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 16, borderBottomWidth: 1 },
-  guildOptionText: { fontSize: 16, fontWeight: 'bold' },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 });
