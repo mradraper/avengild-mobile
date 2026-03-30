@@ -3,7 +3,7 @@ import Colors from '@/constants/Colors';
 import { Codex } from '@/lib/codex';
 import { supabase } from '@/lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
-import { Link, useFocusEffect } from 'expo-router';
+import { Link, useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
@@ -94,6 +94,7 @@ export default function CodexScreen() {
   const theme  = Colors[colorScheme ?? 'dark'];
   const isDark = colorScheme === 'dark';
   const subText = isDark ? '#ccc' : '#666';
+  const router  = useRouter();
 
   // -------------------------------------------------------------------------
   // Data fetching
@@ -176,6 +177,35 @@ export default function CodexScreen() {
   // -------------------------------------------------------------------------
   // Sub-renders
   // -------------------------------------------------------------------------
+
+  function renderHubHeader() {
+    return (
+      <View style={StyleSheet.flatten([styles.hubHeader, { borderBottomColor: isDark ? '#1e2330' : '#e8e8e8' }])}>
+        <Text style={StyleSheet.flatten([styles.screenTitle, { color: theme.text }])}>My Codex</Text>
+        <View style={styles.hubActions}>
+          {/* Create — launches the Guide Creation wizard */}
+          <TouchableOpacity
+            style={StyleSheet.flatten([styles.hubBtn, styles.hubBtnPrimary, { backgroundColor: theme.tint }])}
+            onPress={() => router.push('/create/guide-info')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="add" size={16} color="#fff" style={{ marginRight: 5 }} />
+            <Text style={styles.hubBtnPrimaryText}>Create</Text>
+          </TouchableOpacity>
+
+          {/* Plan — launches the swipe-based event planning flow */}
+          <TouchableOpacity
+            style={StyleSheet.flatten([styles.hubBtn, styles.hubBtnSecondary, { borderColor: theme.tint }])}
+            onPress={() => router.push('/plan/search')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="map-outline" size={16} color={theme.tint} style={{ marginRight: 5 }} />
+            <Text style={StyleSheet.flatten([styles.hubBtnSecondaryText, { color: theme.tint }])}>Plan</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   function renderSegmentControl() {
     return (
@@ -330,10 +360,8 @@ export default function CodexScreen() {
 
   return (
     <View style={StyleSheet.flatten([styles.container, { backgroundColor: theme.background }])}>
-      {/* Screen header */}
-      <View style={styles.screenHeader}>
-        <Text style={StyleSheet.flatten([styles.screenTitle, { color: theme.text }])}>My Codex</Text>
-      </View>
+      {/* Hub header — title + Create / Plan actions */}
+      {renderHubHeader()}
 
       {loading ? (
         <View style={styles.centred}>
@@ -374,9 +402,31 @@ export default function CodexScreen() {
 // ---------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
-  container:    { flex: 1, paddingTop: 60 },
-  screenHeader: { paddingHorizontal: 20, marginBottom: 16 },
-  screenTitle:  { fontSize: 32, fontWeight: 'bold' },
+  container: { flex: 1, paddingTop: 60 },
+
+  // Hub header: title on left, Create + Plan buttons on right
+  hubHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    marginBottom: 4,
+  },
+  screenTitle: { fontSize: 28, fontWeight: 'bold' },
+  hubActions:  { flexDirection: 'row', gap: 8 },
+  hubBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  hubBtnPrimary:        {},
+  hubBtnPrimaryText:    { color: '#fff', fontWeight: '700', fontSize: 14 },
+  hubBtnSecondary:      { borderWidth: 1.5 },
+  hubBtnSecondaryText:  { fontWeight: '700', fontSize: 14 },
 
   // Segment control
   segmentRow: {

@@ -81,6 +81,15 @@ export type Enums = {
 
   /** Guild privacy settings. */
   privacy_setting: 'public' | 'private' | 'secret';
+
+  /**
+   * Tracks a user's response to an event invitation.
+   *
+   * invited   — Invitation sent, awaiting response.
+   * confirmed — User has accepted and will attend.
+   * declined  — User has declined the invitation.
+   */
+  participant_status: 'invited' | 'confirmed' | 'declined';
 };
 
 
@@ -617,6 +626,141 @@ export type DatabaseSchema = {
   };
 
   // ---------------------------------------------------------------------------
+  // events
+  // The live instantiation of a Guide blueprint. Transforms a static Guide
+  // into a scheduled, social plan with participants and optional adaptations.
+  // Lifecycle: Guide → Event → execute → publish as forked Guide.
+  // ---------------------------------------------------------------------------
+  events: {
+    Row: {
+      /** Primary Key. */
+      id: string;
+      /** FK → guides. The source blueprint. Null for scratch-built events. */
+      guide_id: string | null;
+      /** FK → auth.users. The creator and owner of this event. */
+      creator_id: string;
+      /**
+       * Display name. May differ from the source Guide title after adaptation
+       * (e.g., "Dinner and Dessert" forked from "Thai Garden YEG").
+       */
+      title: string;
+      /** Optional start time. May be set after initial creation. */
+      start_time: string | null;
+      /** True once this event has been republished as a new forked Guide. */
+      is_published: boolean;
+      /** FK → guides. The new Guide created when this event was published. */
+      published_guide_id: string | null;
+      /** FK → events. For derived events (e.g., recurring series). */
+      parent_event_id: string | null;
+      created_at: string;
+      updated_at: string | null;
+    };
+    Insert: {
+      id?: string;
+      guide_id?: string | null;
+      creator_id: string;
+      title: string;
+      start_time?: string | null;
+      is_published?: boolean;
+      published_guide_id?: string | null;
+      parent_event_id?: string | null;
+    };
+    Update: Partial<Tables<'events'>['Insert']>;
+  };
+
+  // ---------------------------------------------------------------------------
+  // event_participants
+  // Social coordination layer. Links users to events and tracks RSVP status.
+  // ---------------------------------------------------------------------------
+  event_participants: {
+    Row: {
+      /** Primary Key. */
+      id: string;
+      event_id: string;
+      user_id: string;
+      /** FK → auth.users. The user who sent the invitation. Null if self-joined. */
+      invited_by: string | null;
+      /** invited | confirmed | declined */
+      status: Enums['participant_status'];
+      joined_at: string;
+    };
+    Insert: {
+      id?: string;
+      event_id: string;
+      user_id: string;
+      invited_by?: string | null;
+      status?: Enums['participant_status'];
+    };
+    Update: Partial<Tables<'event_participants'>['Insert']>;
+  };
+
+  // ---------------------------------------------------------------------------
+  // event_step_states
+  // Per-user step completion records during live event execution.
+  // Replaces the legacy step_progress table for event-based progress tracking.
+  // ---------------------------------------------------------------------------
+  event_step_states: {
+    Row: {
+      /** Primary Key. */
+      id: string;
+      event_id: string;
+      step_card_id: string;
+      user_id: string;
+      completed_at: string;
+    };
+    Insert: {
+      id?: string;
+      event_id: string;
+      step_card_id: string;
+      user_id: string;
+      completed_at?: string;
+    };
+    Update: Partial<Tables<'event_step_states'>['Insert']>;
+  };
+
+  // ---------------------------------------------------------------------------
+  // event_step_additions
+  // User-authored steps added to an event beyond the source Guide blueprint.
+  // These are the "ice cream after dinner" additions in the Adapt flow.
+  //
+  // step_index is decimal so additions can be inserted between existing steps
+  // without renumbering. Default 999 appends to the end.
+  //
+  // On event publish → fork, these become permanent step_cards in the new Guide.
+  // ---------------------------------------------------------------------------
+  event_step_additions: {
+    Row: {
+      /** Primary Key. */
+      id: string;
+      event_id: string;
+      /** FK → phases. The phase this addition belongs to. Null = event-only phase. */
+      phase_id: string | null;
+      /** The imperative action. Mirrors step_cards.atomic_action_text. */
+      atomic_action_text: string;
+      /** Decimal for flexible insertion between existing steps. */
+      step_index: number;
+      location_name: string | null;
+      curation_notes: string | null;
+      intent_tag: Enums['intent_tag'];
+      /** Optional Mastery Tree portal to another Guide. */
+      linked_guide_id: string | null;
+      created_at: string;
+    };
+    Insert: {
+      id?: string;
+      event_id: string;
+      phase_id?: string | null;
+      atomic_action_text: string;
+      step_index?: number;
+      location_name?: string | null;
+      curation_notes?: string | null;
+      intent_tag?: Enums['intent_tag'];
+      linked_guide_id?: string | null;
+    };
+    Update: Partial<Tables<'event_step_additions'>['Insert']>;
+  };
+
+  // ---------------------------------------------------------------------------
   // profiles (already defined above)
   // ---------------------------------------------------------------------------
 };
@@ -640,12 +784,20 @@ export type GuideAccess  = Tables<'guide_access'>['Row'];
 export type GuildEvent   = Tables<'guild_events'>['Row'];
 export type Tag          = Tables<'tags'>['Row'];
 
+export type Event              = Tables<'events'>['Row'];
+export type EventParticipant   = Tables<'event_participants'>['Row'];
+export type EventStepState     = Tables<'event_step_states'>['Row'];
+export type EventStepAddition  = Tables<'event_step_additions'>['Row'];
+
 // Insert shorthand aliases.
-export type GuideInsert     = Tables<'guides'>['Insert'];
-export type PhaseInsert     = Tables<'phases'>['Insert'];
-export type StepCardInsert  = Tables<'step_cards'>['Insert'];
-export type CodexInsert     = Tables<'codex_entries'>['Insert'];
-export type GuildInsert     = Tables<'guilds'>['Insert'];
+export type GuideInsert            = Tables<'guides'>['Insert'];
+export type PhaseInsert            = Tables<'phases'>['Insert'];
+export type StepCardInsert         = Tables<'step_cards'>['Insert'];
+export type CodexInsert            = Tables<'codex_entries'>['Insert'];
+export type GuildInsert            = Tables<'guilds'>['Insert'];
+export type EventInsert            = Tables<'events'>['Insert'];
+export type EventParticipantInsert = Tables<'event_participants'>['Insert'];
+export type EventStepAdditionInsert = Tables<'event_step_additions'>['Insert'];
 
 
 // =============================================================================
@@ -706,6 +858,31 @@ export type GuildMembership = {
   role_name: string;
   guild: Pick<Guild, 'id' | 'name' | 'handle' | 'banner_url'>;
 };
+
+/**
+ * A Guide with its phases and steps, enriched for the swipe Discovery card.
+ * Returned by the Plan search screen's active-card data load.
+ */
+export type GuideSwipeCard = GuideDiscoveryCard & {
+  phases: PhaseWithSteps[];
+};
+
+/**
+ * An event with its source Guide card data, as displayed in the user's
+ * upcoming events list.
+ */
+export type EventWithGuide = Event & {
+  guide: GuideDiscoveryCard | null;
+  participant_count: number;
+};
+
+/**
+ * An event step addition combined with its sort position relative to
+ * the source Guide's steps, used during Adapt and execution screens.
+ */
+export type AdaptedStep =
+  | { type: 'original'; step: StepCard; phaseTitle: string }
+  | { type: 'addition'; step: EventStepAddition };
 
 /**
  * A Hearth feed item. Represents either a shared Guide (type: 'idea')

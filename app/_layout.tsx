@@ -74,6 +74,10 @@ function RootLayoutNav() {
       >
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
+        {/* Plan flow — slides up as a full-screen modal from the Codex hub */}
+        <Stack.Screen name="plan" options={{ presentation: 'modal', headerShown: false }} />
+        {/* Guide Creation wizard — full-screen modal from the Codex hub */}
+        <Stack.Screen name="create" options={{ presentation: 'modal', headerShown: false }} />
       </Stack>
     </ThemeProvider>
   );
