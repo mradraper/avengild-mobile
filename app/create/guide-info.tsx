@@ -29,6 +29,7 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -268,6 +269,31 @@ export default function GuideInfoScreen() {
           isDark={isDark}
         />
 
+        {/* Execution behaviour */}
+        <View style={[styles.divider, { backgroundColor: isDark ? '#1e2330' : '#e8e8e8' }]} />
+        <Text style={[styles.fieldLabel, { color: theme.text }]}>Execution Behaviour</Text>
+        <Text style={[styles.fieldHint, { color: subText }]}>
+          In Sequential mode, should the app automatically advance to the next step after
+          the current one is marked done? Users can override this per-guide.
+        </Text>
+        <View style={[styles.toggleRow, { backgroundColor: isDark ? '#121620' : '#f5f5f5', borderColor: isDark ? '#1e2330' : '#ddd' }]}>
+          <View style={styles.toggleInfo}>
+            <Ionicons name="play-skip-forward-outline" size={18} color={guide.auto_advance_default ? theme.tint : (isDark ? '#666' : '#aaa')} />
+            <View style={{ flex: 1, marginLeft: 10 }}>
+              <Text style={[styles.toggleLabel, { color: theme.text }]}>Auto-advance steps</Text>
+              <Text style={[styles.toggleHint, { color: subText }]}>
+                {guide.auto_advance_default ? 'Steps advance automatically when marked done' : 'Users advance manually at their own pace'}
+              </Text>
+            </View>
+          </View>
+          <Switch
+            value={guide.auto_advance_default}
+            onValueChange={v => setGuide({ auto_advance_default: v })}
+            trackColor={{ false: isDark ? '#2a2f3e' : '#ddd', true: 'rgba(188,138,47,0.4)' }}
+            thumbColor={guide.auto_advance_default ? '#BC8A2F' : (isDark ? '#555' : '#bbb')}
+          />
+        </View>
+
         <View style={{ height: 120 }} />
       </ScrollView>
 
@@ -317,6 +343,18 @@ const styles = StyleSheet.create({
   half:   { flex: 1 },
 
   divider: { height: 1, marginVertical: 24 },
+
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 14,
+    marginTop: 6,
+  },
+  toggleInfo: { flex: 1, flexDirection: 'row', alignItems: 'center', marginRight: 12 },
+  toggleLabel: { fontSize: 14, fontWeight: '700' },
+  toggleHint:  { fontSize: 12, marginTop: 2 },
 
   footer: {
     paddingHorizontal: 20,

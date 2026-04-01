@@ -257,6 +257,12 @@ export type DatabaseSchema = {
       // --- Legacy fields (kept for backward compatibility) ---
       difficulty_level: string | null;
       duration_estimate: string | null;
+      /**
+       * When true, Sequential mode auto-advances to the next step after the
+       * current step is marked done. Users may override this per-guide.
+       * Added in migration 008.
+       */
+      auto_advance_default: boolean;
       created_at: string;
       updated_at: string | null;
     };
@@ -280,6 +286,7 @@ export type DatabaseSchema = {
       total_step_completions?: number;
       difficulty_level?: string | null;
       duration_estimate?: string | null;
+      auto_advance_default?: boolean;
     };
     Update: Partial<Tables<'guides'>['Insert']>;
   };
@@ -733,6 +740,13 @@ export type DatabaseSchema = {
       /** invited | confirmed | declined */
       status: Enums['participant_status'];
       joined_at: string;
+      /**
+       * Last active position in the event plan view.
+       * Shape: { phase: number; step: number }
+       * Written on navigation; read on open to enable cross-device resume.
+       * Added in migration 008.
+       */
+      last_position: { phase: number; step: number } | null;
     };
     Insert: {
       id?: string;
@@ -740,6 +754,7 @@ export type DatabaseSchema = {
       user_id: string;
       invited_by?: string | null;
       status?: Enums['participant_status'];
+      last_position?: { phase: number; step: number } | null;
     };
     Update: Partial<Tables<'event_participants'>['Insert']>;
   };

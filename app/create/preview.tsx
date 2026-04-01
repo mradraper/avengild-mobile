@@ -3,8 +3,9 @@
  *
  * Step 4 of the Guide Creation wizard — Preview & Publish.
  *
- * Renders a full read-only preview of the Guide draft using the same visual
- * language as the Guide detail screen (phase headers, step cards, meta row).
+ * Renders a full read-only preview of the Guide draft using the same real
+ * StepCard components that the consumer sees during execution — what the
+ * creator sees in preview is exactly what users will experience.
  *
  * Publish flow:
  *   1. Calls GuideCreationContext.publishGuide() which writes to Supabase.
@@ -16,9 +17,12 @@
  * in the header row, rather than pressing the system back button repeatedly.
  */
 
+import { StepCard } from '@/components/guide/StepCard';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
+import type { DraftStep } from '@/lib/GuideCreationContext';
 import { useGuideCreation } from '@/lib/GuideCreationContext';
+import type { StepCard as StepCardType } from '@/lib/database.types';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useRouter } from 'expo-router';
 import { useState } from 'react';
@@ -32,6 +36,36 @@ import {
   View,
 } from 'react-native';
 
+// ---------------------------------------------------------------------------
+// Converts a DraftStep into the StepCardType shape that StepCard expects.
+// The preview is entirely read-only — onPress is a no-op — so DB-only fields
+// are filled with safe empty values that never reach Supabase.
+// ---------------------------------------------------------------------------
+function draftStepToCard(step: DraftStep, index: number, phaseLocalId: string): StepCardType {
+  return {
+    id:                 step.localId,
+    phase_id:           phaseLocalId,
+    creator_id:         '',
+    atomic_action_text: step.atomic_action_text || `Step ${index + 1}`,
+    step_index:         index,
+    media_payload:      null,
+    curation_notes:     step.curation_notes    || null,
+    beginner_mistakes:  step.beginner_mistakes  || null,
+    intent_tag:         step.intent_tag,
+    is_sensitive:       false,
+    // Omit GPS anchor in preview — lat/lng strings may not yet be valid GeoJSON
+    location_anchor:    null,
+    location_name:      step.location_name      || null,
+    linked_guide_id:    step.linked_guide_id,
+    completion_weight:  1,
+    step_type:          step.step_type,
+    checklist_items:    step.checklist_items.length > 0 ? step.checklist_items : null,
+    timer_seconds:      step.timer_seconds,
+    is_optional:        step.is_optional,
+    created_at:         '',
+  };
+}
+
 export default function PreviewScreen() {
   const colorScheme = useColorScheme();
   const theme  = Colors[colorScheme ?? 'dark'];
@@ -43,19 +77,6 @@ export default function PreviewScreen() {
   const [publishing, setPublishing] = useState(false);
 
   const totalSteps = phases.reduce((s, p) => s + p.steps.length, 0);
-
-  // -------------------------------------------------------------------------
-  // Intent tag colour (mirrors StepCard component)
-  // -------------------------------------------------------------------------
-
-  function tagColour(tag: string): string {
-    switch (tag) {
-      case 'Safety':     return '#BC2F38';
-      case 'Gear_Check': return '#BC8A2F';
-      case 'Milestone':  return '#375E3F';
-      default:           return 'transparent';
-    }
-  }
 
   // -------------------------------------------------------------------------
   // Publish
@@ -208,7 +229,7 @@ export default function PreviewScreen() {
           </View>
         </View>
 
-        {/* Phase + step preview */}
+        {/* Phase + step preview — uses real StepCard for accurate fidelity */}
         {phases.map((phase, pIdx) => (
           <View key={phase.localId} style={styles.phaseBlock}>
             <View style={styles.phaseHeader}>
@@ -223,52 +244,16 @@ export default function PreviewScreen() {
               </View>
             </View>
 
-            {phase.steps.map((step, sIdx) => {
-              const borderColour = tagColour(step.intent_tag);
-              return (
-                <View
-                  key={step.localId}
-                  style={StyleSheet.flatten([
-                    styles.stepCard,
-                    { backgroundColor: theme.cardBackground },
-                    borderColour !== 'transparent' && { borderLeftColor: borderColour, borderLeftWidth: 3 },
-                  ])}
-                >
-                  <View style={[styles.stepDot, { backgroundColor: theme.tint }]}>
-                    <Text style={styles.stepDotText}>{sIdx + 1}</Text>
-                  </View>
-                  <View style={styles.stepBody}>
-                    <Text style={[styles.stepAction, { color: theme.text }]}>{step.atomic_action_text}</Text>
-                    {step.location_name ? (
-                      <Text style={[styles.stepMeta, { color: subText }]}>📍 {step.location_name}</Text>
-                    ) : null}
-                    {step.curation_notes ? (
-                      <Text style={[styles.stepNote, { color: subText }]}>{step.curation_notes}</Text>
-                    ) : null}
-                    {step.linked_guide_id ? (
-                      <Text style={[styles.stepMeta, { color: '#BC8A2F' }]}>↳ Embedded: {step.linked_guide_title}</Text>
-                    ) : null}
-                    {step.step_type === 'checklist' && step.checklist_items.length > 0 && (
-                      <View style={{ marginTop: 6 }}>
-                        {step.checklist_items.map(item => (
-                          <Text key={item.id} style={[styles.stepMeta, { color: subText }]}>
-                            ☐ {item.label}{!item.required ? ' (optional)' : ''}
-                          </Text>
-                        ))}
-                      </View>
-                    )}
-                    {step.step_type === 'timer' && step.timer_seconds && (
-                      <Text style={[styles.stepMeta, { color: '#BC8A2F' }]}>
-                        ⏱ {Math.floor(step.timer_seconds / 60)} minute timer
-                      </Text>
-                    )}
-                    {step.is_optional && (
-                      <Text style={[styles.stepMeta, { color: '#786C50' }]}>Optional step</Text>
-                    )}
-                  </View>
-                </View>
-              );
-            })}
+            {/* Real StepCard components — read-only (onPress is a no-op) */}
+            {phase.steps.map((step, sIdx) => (
+              <StepCard
+                key={step.localId}
+                step={draftStepToCard(step, sIdx, phase.localId)}
+                stepNumber={sIdx + 1}
+                isCompleted={false}
+                onPress={() => {}}
+              />
+            ))}
           </View>
         ))}
 
@@ -344,33 +329,14 @@ const styles = StyleSheet.create({
   statDiv:  { width: 1, height: 36 },
 
   // Phases
-  phaseBlock:  { marginBottom: 20 },
+  phaseBlock:  { marginBottom: 8 },
   phaseHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   phaseDot:    { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
   phaseDotText: { color: '#fff', fontWeight: '800', fontSize: 12 },
   phaseInfo:   { flex: 1 },
   phaseTitle:  { fontSize: 16, fontWeight: '700' },
   phaseMeta:   { fontSize: 12, marginTop: 2 },
-
-  // Steps
-  stepCard: {
-    flexDirection: 'row',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 8,
-    marginLeft: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 1,
-  },
-  stepDot:     { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginRight: 10, flexShrink: 0 },
-  stepDotText: { color: '#fff', fontSize: 11, fontWeight: '800' },
-  stepBody:    { flex: 1 },
-  stepAction:  { fontSize: 15, fontWeight: '600', lineHeight: 21 },
-  stepMeta:    { fontSize: 12, marginTop: 4 },
-  stepNote:    { fontSize: 13, lineHeight: 19, marginTop: 6 },
+  // Steps rendered by real StepCard components — no custom step styles needed here
 
   // Footer
   footer:          { paddingHorizontal: 20, paddingVertical: 12, borderTopWidth: 1, gap: 8 },

@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Image, Linking, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import type { ChecklistItem, StepCard as StepCardType } from '@/lib/database.types';
+import { UserPreferences } from '@/lib/userPreferences';
 import { BeginnerMistakeBanner } from './BeginnerMistakeBanner';
 import { IntentTagBadge, getIntentTagBorderColour } from './IntentTagBadge';
 import { StepTimer } from './StepTimer';
@@ -44,8 +45,25 @@ export function StepCard({ step, stepNumber, isCompleted, onPress, onLinkedGuide
     : null;
   const isEmbeddedGuide = !!step.linked_guide_id;
 
-  // Checklist item state — local UI only (persisted via event_step_states if needed)
+  // Checklist item state — persisted to AsyncStorage, keyed by step ID
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (step.step_type !== 'checklist') return;
+    UserPreferences.getChecklistState(step.id).then(saved => {
+      if (saved.size > 0) setCheckedItems(saved);
+    });
+  }, [step.id, step.step_type]);
+
+  function toggleChecklistItem(itemId: string) {
+    setCheckedItems(prev => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      UserPreferences.setChecklistState(step.id, next).catch(() => {});
+      return next;
+    });
+  }
 
   // Embedded guide steps navigate to the sub-guide instead of toggling completion.
   const handlePress = () => {
@@ -158,29 +176,24 @@ export function StepCard({ step, stepNumber, isCompleted, onPress, onLinkedGuide
         )}
 
         {/* Optional badge */}
-        {(step as any).is_optional && (
+        {step.is_optional && (
           <View style={styles.optionalBadge}>
             <Text style={styles.optionalText}>Optional</Text>
           </View>
         )}
 
         {/* Checklist items — rendered for checklist-type steps */}
-        {(step as any).step_type === 'checklist' &&
-          (step as any).checklist_items &&
-          ((step as any).checklist_items as ChecklistItem[]).length > 0 && (
+        {step.step_type === 'checklist' &&
+          step.checklist_items &&
+          step.checklist_items.length > 0 && (
           <View style={styles.checklistContainer}>
-            {((step as any).checklist_items as ChecklistItem[]).map(item => {
+            {step.checklist_items.map((item: ChecklistItem) => {
               const isChecked = checkedItems.has(item.id);
               return (
                 <TouchableOpacity
                   key={item.id}
                   style={styles.checklistItem}
-                  onPress={() => setCheckedItems(prev => {
-                    const next = new Set(prev);
-                    if (next.has(item.id)) next.delete(item.id);
-                    else next.add(item.id);
-                    return next;
-                  })}
+                  onPress={() => toggleChecklistItem(item.id)}
                   activeOpacity={0.7}
                 >
                   <View style={[
@@ -207,9 +220,9 @@ export function StepCard({ step, stepNumber, isCompleted, onPress, onLinkedGuide
         )}
 
         {/* Timer — rendered for timer-type steps */}
-        {(step as any).step_type === 'timer' && (step as any).timer_seconds && (
+        {step.step_type === 'timer' && step.timer_seconds && (
           <StepTimer
-            totalSeconds={(step as any).timer_seconds}
+            totalSeconds={step.timer_seconds}
             onComplete={() => onPress(step.id)}
           />
         )}

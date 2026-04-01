@@ -80,6 +80,12 @@ export type DraftGuide = {
   derivative_licence:  Enums['derivative_licence'];
   difficulty_level:    string;
   duration_estimate:   string;
+  /**
+   * Creator's preferred Sequential mode behaviour.
+   * When true, the app auto-advances to the next step after the current
+   * step is marked done. Saved to guides.auto_advance_default on publish.
+   */
+  auto_advance_default: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -134,6 +140,7 @@ const DEFAULT_GUIDE: DraftGuide = {
   derivative_licence:    'allow_forking',
   difficulty_level:      '',
   duration_estimate:     '',
+  auto_advance_default:  false,
 };
 
 // ---------------------------------------------------------------------------
@@ -268,6 +275,7 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
       derivative_licence:    g.derivative_licence,
       difficulty_level:      g.difficulty_level ?? '',
       duration_estimate:     g.duration_estimate ?? '',
+      auto_advance_default:  g.auto_advance_default ?? false,
     });
 
     // Fetch phases with steps, ordered by phase_index
@@ -276,6 +284,22 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
       .select('*, step_cards(*)')
       .eq('guide_id', guideId)
       .order('phase_index', { ascending: true });
+
+    // Collect all linked_guide_ids so we can resolve their titles in one query
+    const allSteps = (phasesData ?? []).flatMap((p: any) => p.step_cards ?? []);
+    const linkedIds = [...new Set(
+      allSteps.map((s: any) => s.linked_guide_id).filter(Boolean) as string[]
+    )];
+
+    // Batch-fetch linked guide titles (empty if no embedded guides exist)
+    const linkedTitleMap = new Map<string, string>();
+    if (linkedIds.length > 0) {
+      const { data: linkedGuides } = await supabase
+        .from('guides')
+        .select('id, title')
+        .in('id', linkedIds);
+      (linkedGuides ?? []).forEach((lg: any) => linkedTitleMap.set(lg.id, lg.title));
+    }
 
     const draftPhases: DraftPhase[] = (phasesData ?? []).map((phase: any) => {
       const sortedSteps = (phase.step_cards ?? []).sort(
@@ -294,7 +318,7 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
           location_name:      s.location_name ?? '',
           intent_tag:         s.intent_tag,
           linked_guide_id:    s.linked_guide_id ?? null,
-          linked_guide_title: null, // Not stored in DB; fine to lose on edit load
+          linked_guide_title: s.linked_guide_id ? (linkedTitleMap.get(s.linked_guide_id) ?? null) : null,
           step_type:          s.step_type ?? 'action',
           checklist_items:    s.checklist_items ?? [],
           timer_seconds:      s.timer_seconds ?? null,
@@ -361,6 +385,7 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
           derivative_licence:    guide.derivative_licence,
           difficulty_level:      guide.difficulty_level.trim() || null,
           duration_estimate:     guide.duration_estimate.trim() || null,
+          auto_advance_default:  guide.auto_advance_default,
         })
         .eq('id', editingGuideId);
       if (updateErr) throw updateErr;
@@ -409,6 +434,7 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
         derivative_licence:    guide.derivative_licence,
         difficulty_level:      guide.difficulty_level.trim() || null,
         duration_estimate:     guide.duration_estimate.trim() || null,
+        auto_advance_default:  guide.auto_advance_default,
         original_architect_id: user.id, // Originator — preserved through all forks
       })
       .select()

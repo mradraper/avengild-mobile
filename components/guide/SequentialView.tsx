@@ -6,6 +6,11 @@ import Colors from '@/constants/Colors';
 import type { StepCard as StepCardType } from '@/lib/database.types';
 import { StepCard } from './StepCard';
 
+// Delay (ms) before auto-advancing after a step is marked done.
+// Long enough for the user to see the completion state, short enough
+// to feel snappy.
+const AUTO_ADVANCE_DELAY_MS = 650;
+
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 type Props = {
@@ -15,6 +20,10 @@ type Props = {
   currentIndex: number;
   onIndexChange: (index: number) => void;
   onLinkedGuidePress?: (guideId: string) => void;
+  /** When true, automatically advances to the next step after a step is marked done. */
+  autoAdvance?: boolean;
+  /** Called when the user taps the auto-advance toggle icon in the nav bar. */
+  onAutoAdvanceToggle?: () => void;
 };
 
 /**
@@ -22,10 +31,20 @@ type Props = {
  * Uses native ScrollView pagingEnabled for real swipe gestures — no new
  * dependencies required.
  */
-export function SequentialView({ steps, completedSteps, onStepToggle, currentIndex, onIndexChange, onLinkedGuidePress }: Props) {
+export function SequentialView({
+  steps,
+  completedSteps,
+  onStepToggle,
+  currentIndex,
+  onIndexChange,
+  onLinkedGuidePress,
+  autoAdvance = false,
+  onAutoAdvanceToggle,
+}: Props) {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'dark'];
   const scrollRef = useRef<ScrollView>(null);
+  const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scrollTo = (index: number) => {
     scrollRef.current?.scrollTo({ x: index * SCREEN_WIDTH, animated: true });
@@ -44,6 +63,21 @@ export function SequentialView({ steps, completedSteps, onStepToggle, currentInd
     const newIndex = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
     onIndexChange(newIndex);
   };
+
+  // Wraps onStepToggle so that when auto-advance is on and a step is newly
+  // completed (not uncompleted), we schedule a scroll to the next step.
+  function handleStepToggleWithAutoAdvance(stepId: string) {
+    const wasCompleted = completedSteps.has(stepId);
+    onStepToggle(stepId);
+
+    if (autoAdvance && !wasCompleted && currentIndex < steps.length - 1) {
+      // Clear any pending timer from a rapid double-tap
+      if (autoAdvanceTimerRef.current) clearTimeout(autoAdvanceTimerRef.current);
+      autoAdvanceTimerRef.current = setTimeout(() => {
+        scrollTo(currentIndex + 1);
+      }, AUTO_ADVANCE_DELAY_MS);
+    }
+  }
 
   if (steps.length === 0) {
     return (
@@ -107,7 +141,7 @@ export function SequentialView({ steps, completedSteps, onStepToggle, currentInd
               styles.doneButton,
               { backgroundColor: isCurrentCompleted ? '#786C50' : theme.tint },
             ]}
-            onPress={() => currentStep && onStepToggle(currentStep.id)}
+            onPress={() => currentStep && handleStepToggleWithAutoAdvance(currentStep.id)}
           >
             <Ionicons
               name={isCurrentCompleted ? 'arrow-undo-outline' : 'checkmark-circle-outline'}
@@ -130,11 +164,23 @@ export function SequentialView({ steps, completedSteps, onStepToggle, currentInd
         </TouchableOpacity>
       </View>
 
-      {/* Step counter pill */}
+      {/* Step counter + auto-advance indicator */}
       <View style={styles.counterContainer}>
         <Text style={[styles.counterText, { color: colorScheme === 'dark' ? '#ccc' : '#666' }]}>
           {currentIndex + 1} / {steps.length}
         </Text>
+        {onAutoAdvanceToggle && (
+          <TouchableOpacity onPress={onAutoAdvanceToggle} style={styles.advanceToggle} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons
+              name={autoAdvance ? 'play-skip-forward' : 'play-skip-forward-outline'}
+              size={14}
+              color={autoAdvance ? theme.tint : (colorScheme === 'dark' ? '#555' : '#bbb')}
+            />
+            <Text style={[styles.advanceLabel, { color: autoAdvance ? theme.tint : (colorScheme === 'dark' ? '#555' : '#bbb') }]}>
+              {autoAdvance ? 'Auto' : 'Manual'}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );
@@ -166,8 +212,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   doneButtonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  counterContainer: { alignItems: 'center', paddingBottom: 8 },
+  counterContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingBottom: 8, gap: 12 },
   counterText: { fontSize: 12 },
+  advanceToggle: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  advanceLabel: { fontSize: 11, fontWeight: '600' },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   emptyText: { fontSize: 15, opacity: 0.5 },
 });
