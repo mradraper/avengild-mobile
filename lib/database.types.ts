@@ -2,7 +2,7 @@
  * database.types.ts
  *
  * Avengild — Manual Database Type Definitions
- * Reflects schema state after: 001_rebuild_guides_schema.sql
+ * Reflects schema state after: 005_chat_infrastructure.sql
  *
  * This file is the single source of truth for all Supabase table shapes
  * in the mobile app. It should be updated in lockstep with every SQL
@@ -79,6 +79,16 @@ export type Enums = {
    */
   codex_status: 'Intention' | 'Scheduled' | 'Completed';
 
+  /**
+   * Determines the interaction model for a step card.
+   * Added in migration 007.
+   *
+   * action    — Standard atomic action (default).
+   * checklist — Expandable sub-item list; done when required items are checked.
+   * timer     — Timed activity; done after countdown completes.
+   */
+  step_type: 'action' | 'checklist' | 'timer';
+
   /** Guild privacy settings. */
   privacy_setting: 'public' | 'private' | 'secret';
 
@@ -96,6 +106,12 @@ export type Enums = {
 // =============================================================================
 // SECTION 2: HELPER TYPES
 // =============================================================================
+
+/**
+ * A single item in a step card's checklist_items JSONB array.
+ * Used when step_type = 'checklist'.
+ */
+export type ChecklistItem = { id: string; label: string; required: boolean };
 
 /**
  * Represents a single item in a step card's media_payload JSONB array.
@@ -190,8 +206,11 @@ export type DatabaseSchema = {
       /** FK → auth.users. The current owner and author of this Guide. */
       creator_id: string;
       title: string;
-      /** High-level overview of the Guide's purpose and scope. */
-      description: string | null;
+      /**
+       * UNVERIFIED — column not confirmed in live DB (may not exist).
+       * Use `summary` instead for display text until this is confirmed.
+       */
+      description?: string | null;
       /** Legacy summary field. Use description for new content. */
       summary: string | null;
       /** URL to the primary image or video loop for Discovery cards. */
@@ -369,6 +388,26 @@ export type DatabaseSchema = {
        * Used to weight this step's contribution to total_step_completions.
        */
       completion_weight: number;
+      /**
+       * Interaction model for this step. Added in migration 007.
+       * action | checklist | timer
+       */
+      step_type: Enums['step_type'];
+      /**
+       * Sub-items for checklist-type steps. Each item has an id, label,
+       * and required flag. Null for non-checklist steps.
+       */
+      checklist_items: ChecklistItem[] | null;
+      /**
+       * Countdown duration in seconds for timer-type steps.
+       * e.g., 600 = 10 minutes. Null for non-timer steps.
+       */
+      timer_seconds: number | null;
+      /**
+       * When true, this step is presented as a suggestion rather than a
+       * requirement. Excluded from required completion percentage.
+       */
+      is_optional: boolean;
       created_at: string;
     };
     Insert: {
@@ -386,6 +425,10 @@ export type DatabaseSchema = {
       location_anchor?: GeographyPoint | null;
       linked_guide_id?: string | null;
       completion_weight?: number;
+      step_type?: Enums['step_type'];
+      checklist_items?: ChecklistItem[] | null;
+      timer_seconds?: number | null;
+      is_optional?: boolean;
     };
     Update: Partial<Tables<'step_cards'>['Insert']>;
   };
@@ -654,6 +697,12 @@ export type DatabaseSchema = {
       parent_event_id: string | null;
       created_at: string;
       updated_at: string | null;
+      /**
+       * Step card UUIDs excluded by the organiser during the Adapt flow.
+       * Added in migration 005. Used by the Event Detail screen to skip
+       * or grey-out steps the organiser removed from the blueprint.
+       */
+      removed_step_ids: string[];
     };
     Insert: {
       id?: string;
@@ -664,6 +713,7 @@ export type DatabaseSchema = {
       is_published?: boolean;
       published_guide_id?: string | null;
       parent_event_id?: string | null;
+      removed_step_ids?: string[];
     };
     Update: Partial<Tables<'events'>['Insert']>;
   };
@@ -761,6 +811,104 @@ export type DatabaseSchema = {
   };
 
   // ---------------------------------------------------------------------------
+  // chat_threads
+  // Context anchor for a conversation. Each thread is tied to exactly one
+  // guild OR one event (enforced by a CHECK constraint in migration 005).
+  // Threads are created lazily by the app on first message send.
+  // ---------------------------------------------------------------------------
+  chat_threads: {
+    Row: {
+      /** Primary Key. */
+      id: string;
+      /** FK → guilds. Set for guild threads; null for event threads. */
+      guild_id: string | null;
+      /** FK → events. Set for event threads; null for guild threads. */
+      event_id: string | null;
+      created_at: string;
+    };
+    Insert: {
+      id?: string;
+      guild_id?: string | null;
+      event_id?: string | null;
+    };
+    Update: Partial<Tables<'chat_threads'>['Insert']>;
+  };
+
+  // ---------------------------------------------------------------------------
+  // chat_messages
+  // Unified message store for all thread types (guild and event).
+  // Published to Supabase Realtime for live updates.
+  // Soft-delete via is_deleted flag; body is never erased for audit integrity.
+  // ---------------------------------------------------------------------------
+  chat_messages: {
+    Row: {
+      /** Primary Key. */
+      id: string;
+      /** FK → chat_threads. The conversation this message belongs to. */
+      thread_id: string;
+      /** FK → auth.users. Null if the user account was deleted. */
+      sender_id: string | null;
+      /** The message text. Cannot be empty. */
+      body: string;
+      /** FK → chat_messages. Non-null when this is a threaded reply. */
+      reply_to_id: string | null;
+      /**
+       * Optional array of attachment objects.
+       * Shape: { type: 'image' | 'guide_link', url: string, label?: string }
+       * v1 ships with text only; attachments are a future extension.
+       */
+      attachments: Record<string, unknown>[];
+      /** Soft-delete flag. Message body is retained; UI hides the content. */
+      is_deleted: boolean;
+      created_at: string;
+      /** Set when the sender edits the message body. */
+      edited_at: string | null;
+    };
+    Insert: {
+      id?: string;
+      thread_id: string;
+      sender_id?: string | null;
+      body: string;
+      reply_to_id?: string | null;
+      attachments?: Record<string, unknown>[];
+      is_deleted?: boolean;
+    };
+    Update: Partial<Tables<'chat_messages'>['Insert']>;
+  };
+
+  // ---------------------------------------------------------------------------
+  // user_step_notes  (Migration 007)
+  // Personal annotations a user attaches to a step while executing a Guide.
+  // One note per user per step, upserted on save.
+  // ---------------------------------------------------------------------------
+  user_step_notes: {
+    Row: {
+      /** Primary Key. */
+      id: string;
+      /** FK → auth.users. The author of this note. */
+      user_id: string;
+      /** FK → step_cards. The step being annotated. */
+      step_card_id: string;
+      /** FK → guides. The Guide this step belongs to. */
+      guide_id: string;
+      /** The user's personal note text. */
+      note_text: string;
+      created_at: string;
+      updated_at: string;
+    };
+    Insert: {
+      id?: string;
+      user_id: string;
+      step_card_id: string;
+      guide_id: string;
+      note_text: string;
+      created_at?: string;
+      updated_at?: string;
+    };
+    Update: Partial<Tables<'user_step_notes'>['Insert']>;
+  };
+
+  // ---------------------------------------------------------------------------
   // profiles (already defined above)
   // ---------------------------------------------------------------------------
 };
@@ -788,6 +936,9 @@ export type Event              = Tables<'events'>['Row'];
 export type EventParticipant   = Tables<'event_participants'>['Row'];
 export type EventStepState     = Tables<'event_step_states'>['Row'];
 export type EventStepAddition  = Tables<'event_step_additions'>['Row'];
+export type ChatThread         = Tables<'chat_threads'>['Row'];
+export type ChatMessage        = Tables<'chat_messages'>['Row'];
+export type UserStepNote       = Tables<'user_step_notes'>['Row'];
 
 // Insert shorthand aliases.
 export type GuideInsert            = Tables<'guides'>['Insert'];
@@ -795,9 +946,11 @@ export type PhaseInsert            = Tables<'phases'>['Insert'];
 export type StepCardInsert         = Tables<'step_cards'>['Insert'];
 export type CodexInsert            = Tables<'codex_entries'>['Insert'];
 export type GuildInsert            = Tables<'guilds'>['Insert'];
-export type EventInsert            = Tables<'events'>['Insert'];
-export type EventParticipantInsert = Tables<'event_participants'>['Insert'];
+export type EventInsert             = Tables<'events'>['Insert'];
+export type EventParticipantInsert  = Tables<'event_participants'>['Insert'];
 export type EventStepAdditionInsert = Tables<'event_step_additions'>['Insert'];
+export type ChatMessageInsert       = Tables<'chat_messages'>['Insert'];
+export type ChatThreadInsert        = Tables<'chat_threads'>['Insert'];
 
 
 // =============================================================================
@@ -815,7 +968,6 @@ export type GuideDiscoveryCard = Pick<
   Guide,
   | 'id'
   | 'title'
-  | 'description'
   | 'summary'
   | 'hero_media_url'
   | 'primary_location_name'
@@ -885,6 +1037,14 @@ export type AdaptedStep =
   | { type: 'addition'; step: EventStepAddition };
 
 /**
+ * A chat message enriched with the sender's display name and avatar,
+ * as returned by the ChatView component's live query.
+ */
+export type ChatMessageWithSender = ChatMessage & {
+  sender: Pick<Profile, 'full_name' | 'username' | 'avatar_url'> | null;
+};
+
+/**
  * A Hearth feed item. Represents either a shared Guide (type: 'idea')
  * or a scheduled Event (type: 'plan') on a Guild's Hearth feed.
  */
@@ -900,3 +1060,24 @@ export type HearthItem = {
   image_url: string | null;
   is_pinned?: boolean;
 };
+
+
+// =============================================================================
+// SECTION 6: UTILITY FUNCTIONS
+// =============================================================================
+
+/**
+ * Extract lat/lng from a PostgREST Geography Point response.
+ *
+ * PostgREST serialises PostGIS GEOGRAPHY columns as GeoJSON:
+ *   { type: 'Point', coordinates: [longitude, latitude] }
+ *
+ * Note that GeoJSON stores coordinates as [lng, lat], not [lat, lng].
+ */
+export function getLatLng(anchor: GeographyPoint | null): { lat: number; lng: number } | null {
+  if (!anchor) return null;
+  if (anchor.type === 'Point' && Array.isArray(anchor.coordinates)) {
+    return { lat: anchor.coordinates[1], lng: anchor.coordinates[0] };
+  }
+  return null;
+}

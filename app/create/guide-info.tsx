@@ -21,8 +21,8 @@ import Colors from '@/constants/Colors';
 import { useGuideCreation } from '@/lib/GuideCreationContext';
 import type { Enums } from '@/lib/database.types';
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useRouter } from 'expo-router';
-import { useState } from 'react';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -98,7 +98,22 @@ export default function GuideInfoScreen() {
   const subText = isDark ? '#aaa' : '#666';
   const router  = useRouter();
 
-  const { guide, setGuide } = useGuideCreation();
+  const { editGuideId } = useLocalSearchParams<{ editGuideId?: string }>();
+  const isEditMode = !!editGuideId;
+
+  const { guide, setGuide, loadExistingGuide, resetDraft } = useGuideCreation();
+
+  // Load the existing guide data when entering edit mode
+  useEffect(() => {
+    if (editGuideId) {
+      resetDraft(); // Clear any previous draft first
+      loadExistingGuide(editGuideId).catch(err => {
+        Alert.alert('Error', 'Could not load guide for editing.');
+        console.error('[GuideInfo] loadExistingGuide error:', err);
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editGuideId]);
 
   function handleContinue() {
     if (!guide.title.trim()) {
@@ -116,7 +131,7 @@ export default function GuideInfoScreen() {
     >
       <Stack.Screen
         options={{
-          title: 'New Guide',
+          title: isEditMode ? 'Edit Guide' : 'New Guide',
           headerStyle: { backgroundColor: theme.background },
           headerTintColor: theme.tint,
           headerShadowVisible: false,
@@ -263,7 +278,7 @@ export default function GuideInfoScreen() {
           onPress={handleContinue}
           activeOpacity={0.85}
         >
-          <Text style={styles.continueBtnText}>Add Phases  →</Text>
+          <Text style={styles.continueBtnText}>{isEditMode ? 'Edit Phases  →' : 'Add Phases  →'}</Text>
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>

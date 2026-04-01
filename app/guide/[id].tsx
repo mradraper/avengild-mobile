@@ -4,7 +4,7 @@ import { Codex } from '@/lib/codex';
 import type { Guide, PhaseWithSteps } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { BirdsEyeHeader } from '@/components/guide/BirdsEyeHeader';
@@ -21,6 +21,7 @@ type UserGuild = {
 
 export default function GuideDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'dark'];
 
@@ -34,6 +35,7 @@ export default function GuideDetailScreen() {
 
   const [showShareModal, setShowShareModal] = useState(false);
   const [userGuilds, setUserGuilds] = useState<UserGuild[]>([]);
+  const [isCreator, setIsCreator] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -51,7 +53,12 @@ export default function GuideDetailScreen() {
         .eq('id', id)
         .single();
 
-      if (guideData) setGuide(guideData);
+      if (guideData) {
+        setGuide(guideData);
+        // Check if the current user is the creator of this guide
+        const { data: { user } } = await supabase.auth.getUser();
+        setIsCreator(user?.id === guideData.creator_id);
+      }
 
       // Fetch phases with their step_cards, ordered by phase_index and step_index
       const { data: phasesData } = await supabase
@@ -126,6 +133,10 @@ export default function GuideDetailScreen() {
     setSequentialStepIndex(stepIndex);
   };
 
+  const handleLinkedGuidePress = (guideId: string) => {
+    router.push({ pathname: '/guide/[id]', params: { id: guideId } });
+  };
+
   if (loading) {
     return (
       <View style={[styles.centered, { backgroundColor: theme.background }]}>
@@ -153,9 +164,41 @@ export default function GuideDetailScreen() {
           headerTintColor: theme.tint,
           headerShadowVisible: false,
           headerRight: () => (
-            <TouchableOpacity onPress={() => setShowShareModal(true)} style={{ marginRight: 10 }}>
-              <Ionicons name="bonfire-outline" size={24} color={theme.tint} />
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginRight: 6 }}>
+              {/* Edit Guide — only visible to the creator */}
+              {isCreator && (
+                <TouchableOpacity
+                  onPress={() =>
+                    router.push({
+                      pathname: '/create/guide-info',
+                      params: { editGuideId: id },
+                    })
+                  }
+                  style={{ paddingHorizontal: 6, paddingVertical: 4 }}
+                >
+                  <Ionicons name="pencil-outline" size={22} color={theme.tint} />
+                </TouchableOpacity>
+              )}
+              {/* Plan Event — jump directly to the Adapt screen for this Guide */}
+              <TouchableOpacity
+                onPress={() =>
+                  router.push({
+                    pathname: '/plan/adapt',
+                    params: { guideId: id, title: guide?.title ?? '' },
+                  })
+                }
+                style={{ paddingHorizontal: 6, paddingVertical: 4 }}
+              >
+                <Ionicons name="map-outline" size={22} color={theme.tint} />
+              </TouchableOpacity>
+              {/* Share to Hearth */}
+              <TouchableOpacity
+                onPress={() => setShowShareModal(true)}
+                style={{ paddingHorizontal: 6, paddingVertical: 4 }}
+              >
+                <Ionicons name="bonfire-outline" size={22} color={theme.tint} />
+              </TouchableOpacity>
+            </View>
           ),
         }}
       />
@@ -195,12 +238,14 @@ export default function GuideDetailScreen() {
           onStepToggle={handleStepToggle}
           currentIndex={sequentialStepIndex}
           onIndexChange={setSequentialStepIndex}
+          onLinkedGuidePress={handleLinkedGuidePress}
         />
       ) : (
         <FreeformView
           steps={activeSteps}
           completedSteps={completedSteps}
           onStepToggle={handleStepToggle}
+          onLinkedGuidePress={handleLinkedGuidePress}
         />
       )}
 

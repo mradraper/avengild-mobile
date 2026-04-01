@@ -9,13 +9,14 @@ type Props = {
   steps: StepCardType[];
   completedSteps: Set<string>;
   onStepToggle: (stepId: string) => void;
+  onLinkedGuidePress?: (guideId: string) => void;
 };
 
 /**
  * Freeform execution mode: vertical checklist of compact StepCard rows.
  * No ordering enforcement — users complete steps in any order they choose.
  */
-export function FreeformView({ steps, completedSteps, onStepToggle }: Props) {
+export function FreeformView({ steps, completedSteps, onStepToggle, onLinkedGuidePress }: Props) {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'dark'];
 
@@ -45,6 +46,7 @@ export function FreeformView({ steps, completedSteps, onStepToggle }: Props) {
           stepNumber={index + 1}
           isCompleted={completedSteps.has(item.id)}
           onPress={onStepToggle}
+          onLinkedGuidePress={onLinkedGuidePress}
           compact
         />
       )}

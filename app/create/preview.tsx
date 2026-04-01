@@ -39,7 +39,7 @@ export default function PreviewScreen() {
   const subText = isDark ? '#aaa' : '#666';
   const router  = useRouter();
 
-  const { guide, phases, publishGuide, resetDraft } = useGuideCreation();
+  const { guide, phases, publishGuide, resetDraft, isEditMode, editingGuideId } = useGuideCreation();
   const [publishing, setPublishing] = useState(false);
 
   const totalSteps = phases.reduce((s, p) => s + p.steps.length, 0);
@@ -62,24 +62,35 @@ export default function PreviewScreen() {
   // -------------------------------------------------------------------------
 
   async function handlePublish() {
+    const visibility = guide.stewardship_level === 'Public'
+      ? 'visible to everyone on Discovery'
+      : guide.stewardship_level === 'Guild_Only'
+        ? 'visible to your guilds'
+        : 'private (only you)';
+
     Alert.alert(
-      'Publish Guide?',
-      `"${guide.title}" will be ${guide.stewardship_level === 'Public' ? 'visible to everyone on Discovery' : guide.stewardship_level === 'Guild_Only' ? 'visible to your guilds' : 'private (only you)'}.`,
+      isEditMode ? 'Save Changes?' : 'Publish Guide?',
+      isEditMode
+        ? `Save your changes to "${guide.title}"? Users mid-way through the guide will see the updated version.`
+        : `"${guide.title}" will be ${visibility}.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Publish',
+          text: isEditMode ? 'Save' : 'Publish',
           onPress: async () => {
             setPublishing(true);
             try {
               const guideId = await publishGuide();
               resetDraft();
-              // Dismiss the create modal stack, then navigate to the new Guide
+              // Dismiss the create modal stack, then navigate to the Guide
               router.dismissAll();
               router.push({ pathname: '/guide/[id]', params: { id: guideId } });
             } catch (err: any) {
               console.error('[Preview] publishGuide error:', err);
-              Alert.alert('Publish failed', err.message ?? 'Please try again.');
+              Alert.alert(
+                isEditMode ? 'Save failed' : 'Publish failed',
+                err.message ?? 'Please try again.',
+              );
             } finally {
               setPublishing(false);
             }
@@ -97,7 +108,7 @@ export default function PreviewScreen() {
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <Stack.Screen
         options={{
-          title: 'Preview',
+          title: isEditMode ? 'Review & Save' : 'Preview',
           headerStyle: { backgroundColor: theme.background },
           headerTintColor: theme.tint,
           headerShadowVisible: false,
@@ -235,8 +246,25 @@ export default function PreviewScreen() {
                       <Text style={[styles.stepNote, { color: subText }]}>{step.curation_notes}</Text>
                     ) : null}
                     {step.linked_guide_id ? (
-                      <Text style={[styles.stepMeta, { color: '#BC8A2F' }]}>⎇  Mastery Tree: {step.linked_guide_title}</Text>
+                      <Text style={[styles.stepMeta, { color: '#BC8A2F' }]}>↳ Embedded: {step.linked_guide_title}</Text>
                     ) : null}
+                    {step.step_type === 'checklist' && step.checklist_items.length > 0 && (
+                      <View style={{ marginTop: 6 }}>
+                        {step.checklist_items.map(item => (
+                          <Text key={item.id} style={[styles.stepMeta, { color: subText }]}>
+                            ☐ {item.label}{!item.required ? ' (optional)' : ''}
+                          </Text>
+                        ))}
+                      </View>
+                    )}
+                    {step.step_type === 'timer' && step.timer_seconds && (
+                      <Text style={[styles.stepMeta, { color: '#BC8A2F' }]}>
+                        ⏱ {Math.floor(step.timer_seconds / 60)} minute timer
+                      </Text>
+                    )}
+                    {step.is_optional && (
+                      <Text style={[styles.stepMeta, { color: '#786C50' }]}>Optional step</Text>
+                    )}
                   </View>
                 </View>
               );
@@ -265,7 +293,7 @@ export default function PreviewScreen() {
         >
           {publishing
             ? <ActivityIndicator color="#fff" />
-            : <Text style={styles.publishBtnText}>Publish Guide  ✓</Text>
+            : <Text style={styles.publishBtnText}>{isEditMode ? 'Save Changes  ✓' : 'Publish Guide  ✓'}</Text>
           }
         </TouchableOpacity>
       </View>

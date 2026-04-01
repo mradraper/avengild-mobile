@@ -12,17 +12,23 @@
  * table from accumulating abandoned drafts.
  *
  * On publish, the context's `publishGuide()` function:
- *   1. Inserts the `guides` row.
+ *   1. Inserts the `guides` row (or updates it in edit mode).
  *   2. Inserts all `phases` rows.
  *   3. Inserts all `step_cards` rows for each phase.
- *   4. Returns the new Guide's ID so the app can navigate to it.
+ *   4. Returns the new (or existing) Guide's ID so the app can navigate to it.
+ *
+ * Edit mode:
+ *   Call `loadExistingGuide(guideId)` to pre-populate the draft from the DB.
+ *   `publishGuide()` will detect edit mode and UPDATE the guide row rather
+ *   than inserting a new one. Existing phases/steps are deleted and re-inserted
+ *   (step IDs change — acceptable for MVP).
  *
  * Usage:
  *   Wrap the create/ route group in <GuideCreationProvider> in its _layout.tsx.
  *   Then call `useGuideCreation()` in any wizard screen.
  */
 
-import type { Enums } from '@/lib/database.types';
+import type { ChecklistItem, Enums } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import React, { createContext, useCallback, useContext, useState } from 'react';
 
@@ -41,6 +47,18 @@ export type DraftStep = {
   /** When set, this step is a Mastery Tree portal to another Guide. */
   linked_guide_id:    string | null;
   linked_guide_title: string | null;
+  /** Step interaction type. Added in migration 007. */
+  step_type:          'action' | 'checklist' | 'timer';
+  /** Checklist sub-items (step_type = 'checklist' only). */
+  checklist_items:    ChecklistItem[];
+  /** Countdown duration in seconds (step_type = 'timer' only). */
+  timer_seconds:      number | null;
+  /** When true, this step is a suggestion and not required for completion. */
+  is_optional:        boolean;
+  /** Latitude string for GPS coordinate input (converted to GeoJSON on save). */
+  latitude:           string;
+  /** Longitude string for GPS coordinate input (converted to GeoJSON on save). */
+  longitude:          string;
 };
 
 export type DraftPhase = {
@@ -72,6 +90,11 @@ type GuideCreationContextValue = {
   guide:    DraftGuide;
   phases:   DraftPhase[];
 
+  /** When in edit mode, the ID of the guide being edited. */
+  editingGuideId: string | null;
+  /** True when editingGuideId is set. */
+  isEditMode: boolean;
+
   // Guide info
   setGuide: (updates: Partial<DraftGuide>) => void;
 
@@ -87,7 +110,10 @@ type GuideCreationContextValue = {
   removeStep:      (phaseLocalId: string, stepLocalId: string) => void;
   reorderSteps:    (phaseLocalId: string, fromIndex: number, toIndex: number) => void;
 
-  // Publish
+  // Edit mode
+  loadExistingGuide: (guideId: string) => Promise<void>;
+
+  // Publish (create or update)
   publishGuide:    () => Promise<string>;
 
   // Reset (called after publish or if the user abandons the flow)
@@ -117,8 +143,11 @@ const DEFAULT_GUIDE: DraftGuide = {
 const GuideCreationContext = createContext<GuideCreationContextValue | null>(null);
 
 export function GuideCreationProvider({ children }: { children: React.ReactNode }) {
-  const [guide,  setGuideState]  = useState<DraftGuide>(DEFAULT_GUIDE);
-  const [phases, setPhasesState] = useState<DraftPhase[]>([]);
+  const [guide,          setGuideState]    = useState<DraftGuide>(DEFAULT_GUIDE);
+  const [phases,         setPhasesState]   = useState<DraftPhase[]>([]);
+  const [editingGuideId, setEditingGuideId] = useState<string | null>(null);
+
+  const isEditMode = editingGuideId !== null;
 
   // -------------------------------------------------------------------------
   // Guide
@@ -222,7 +251,67 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
   );
 
   // -------------------------------------------------------------------------
-  // Publish
+  // Load existing guide (edit mode)
+  // -------------------------------------------------------------------------
+
+  const loadExistingGuide = useCallback(async (guideId: string): Promise<void> => {
+    const { data: g } = await supabase.from('guides').select('*').eq('id', guideId).single();
+    if (!g) throw new Error('Guide not found.');
+
+    setGuideState({
+      title:                 g.title ?? '',
+      description:           g.description ?? '',
+      summary:               g.summary ?? '',
+      hero_media_url:        g.hero_media_url,
+      primary_location_name: g.primary_location_name ?? '',
+      stewardship_level:     g.stewardship_level,
+      derivative_licence:    g.derivative_licence,
+      difficulty_level:      g.difficulty_level ?? '',
+      duration_estimate:     g.duration_estimate ?? '',
+    });
+
+    // Fetch phases with steps, ordered by phase_index
+    const { data: phasesData } = await supabase
+      .from('phases')
+      .select('*, step_cards(*)')
+      .eq('guide_id', guideId)
+      .order('phase_index', { ascending: true });
+
+    const draftPhases: DraftPhase[] = (phasesData ?? []).map((phase: any) => {
+      const sortedSteps = (phase.step_cards ?? []).sort(
+        (a: any, b: any) => a.step_index - b.step_index,
+      );
+      return {
+        localId:        phase.id, // Use actual DB id as localId for edit mode
+        title:          phase.title,
+        description:    phase.description ?? '',
+        execution_mode: phase.execution_mode,
+        steps: sortedSteps.map((s: any) => ({
+          localId:            s.id, // Use actual DB id as localId
+          atomic_action_text: s.atomic_action_text,
+          curation_notes:     s.curation_notes ?? '',
+          beginner_mistakes:  s.beginner_mistakes ?? '',
+          location_name:      s.location_name ?? '',
+          intent_tag:         s.intent_tag,
+          linked_guide_id:    s.linked_guide_id ?? null,
+          linked_guide_title: null, // Not stored in DB; fine to lose on edit load
+          step_type:          s.step_type ?? 'action',
+          checklist_items:    s.checklist_items ?? [],
+          timer_seconds:      s.timer_seconds ?? null,
+          is_optional:        s.is_optional ?? false,
+          // Convert GeoJSON back to string inputs for the form
+          latitude:  s.location_anchor ? String((s.location_anchor as any).coordinates?.[1] ?? '') : '',
+          longitude: s.location_anchor ? String((s.location_anchor as any).coordinates?.[0] ?? '') : '',
+        })),
+      };
+    });
+
+    setPhasesState(draftPhases);
+    setEditingGuideId(guideId);
+  }, []);
+
+  // -------------------------------------------------------------------------
+  // Publish (create or update)
   // -------------------------------------------------------------------------
 
   const publishGuide = useCallback(async (): Promise<string> => {
@@ -231,7 +320,82 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
 
     if (!guide.title.trim()) throw new Error('A Guide must have a title.');
 
-    // 1. Insert the Guide row
+    // Helper: build the step rows array for a phase
+    function buildStepRows(phaseId: string, draftSteps: DraftStep[]) {
+      return draftSteps.map((s, sIdx) => {
+        const lat = parseFloat(s.latitude ?? '');
+        const lng = parseFloat(s.longitude ?? '');
+        const location_anchor = (!isNaN(lat) && !isNaN(lng))
+          ? { type: 'Point' as const, coordinates: [lng, lat] }
+          : null;
+        return {
+          phase_id:           phaseId,
+          creator_id:         user.id,
+          atomic_action_text: s.atomic_action_text.trim(),
+          curation_notes:     s.curation_notes.trim() || null,
+          beginner_mistakes:  s.beginner_mistakes.trim() || null,
+          location_name:      s.location_name.trim() || null,
+          location_anchor,
+          intent_tag:         s.intent_tag,
+          linked_guide_id:    s.linked_guide_id,
+          step_type:          s.step_type,
+          checklist_items:    s.checklist_items.length > 0 ? s.checklist_items : null,
+          timer_seconds:      s.timer_seconds,
+          is_optional:        s.is_optional,
+          step_index:         sIdx,
+        };
+      });
+    }
+
+    // ── Edit mode: update guide row, delete old phases/steps, re-insert ──────
+    if (editingGuideId) {
+      const { error: updateErr } = await supabase
+        .from('guides')
+        .update({
+          title:                 guide.title.trim(),
+          description:           guide.description.trim() || null,
+          summary:               guide.summary.trim() || null,
+          hero_media_url:        guide.hero_media_url,
+          primary_location_name: guide.primary_location_name.trim() || null,
+          stewardship_level:     guide.stewardship_level,
+          derivative_licence:    guide.derivative_licence,
+          difficulty_level:      guide.difficulty_level.trim() || null,
+          duration_estimate:     guide.duration_estimate.trim() || null,
+        })
+        .eq('id', editingGuideId);
+      if (updateErr) throw updateErr;
+
+      // Delete all existing phases (cascades to step_cards via FK)
+      await supabase.from('phases').delete().eq('guide_id', editingGuideId);
+
+      // Re-insert all phases and steps
+      for (let pIdx = 0; pIdx < phases.length; pIdx++) {
+        const draftPhase = phases[pIdx];
+
+        const { data: insertedPhase, error: phaseError } = await supabase
+          .from('phases')
+          .insert({
+            guide_id:       editingGuideId,
+            title:          draftPhase.title.trim(),
+            description:    draftPhase.description.trim() || null,
+            phase_index:    pIdx,
+            execution_mode: draftPhase.execution_mode,
+          })
+          .select()
+          .single();
+        if (phaseError) throw phaseError;
+
+        if (draftPhase.steps.length > 0) {
+          const stepRows = buildStepRows(insertedPhase.id, draftPhase.steps);
+          const { error: stepsError } = await supabase.from('step_cards').insert(stepRows);
+          if (stepsError) throw stepsError;
+        }
+      }
+
+      return editingGuideId;
+    }
+
+    // ── Create mode: insert new guide row, phases, and steps ─────────────────
     const { data: insertedGuide, error: guideError } = await supabase
       .from('guides')
       .insert({
@@ -253,7 +417,6 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
     if (guideError) throw guideError;
     const guideId = insertedGuide.id;
 
-    // 2. Insert phases (one at a time to capture returned IDs for steps)
     for (let pIdx = 0; pIdx < phases.length; pIdx++) {
       const draftPhase = phases[pIdx];
 
@@ -270,32 +433,16 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
         .single();
 
       if (phaseError) throw phaseError;
-      const phaseId = insertedPhase.id;
 
-      // 3. Insert steps for this phase
       if (draftPhase.steps.length > 0) {
-        const stepRows = draftPhase.steps.map((s, sIdx) => ({
-          phase_id:           phaseId,
-          creator_id:         user.id,
-          atomic_action_text: s.atomic_action_text.trim(),
-          curation_notes:     s.curation_notes.trim() || null,
-          beginner_mistakes:  s.beginner_mistakes.trim() || null,
-          location_name:      s.location_name.trim() || null,
-          intent_tag:         s.intent_tag,
-          linked_guide_id:    s.linked_guide_id,
-          step_index:         sIdx,
-        }));
-
-        const { error: stepsError } = await supabase
-          .from('step_cards')
-          .insert(stepRows);
-
+        const stepRows = buildStepRows(insertedPhase.id, draftPhase.steps);
+        const { error: stepsError } = await supabase.from('step_cards').insert(stepRows);
         if (stepsError) throw stepsError;
       }
     }
 
     return guideId;
-  }, [guide, phases]);
+  }, [guide, phases, editingGuideId]);
 
   // -------------------------------------------------------------------------
   // Reset
@@ -304,14 +451,18 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
   const resetDraft = useCallback(() => {
     setGuideState(DEFAULT_GUIDE);
     setPhasesState([]);
+    setEditingGuideId(null);
   }, []);
 
   return (
     <GuideCreationContext.Provider value={{
       guide, phases,
+      editingGuideId,
+      isEditMode,
       setGuide,
       addPhase, updatePhase, removePhase, reorderPhases,
       addStep, updateStep, removeStep, reorderSteps,
+      loadExistingGuide,
       publishGuide,
       resetDraft,
     }}>

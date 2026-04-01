@@ -122,7 +122,7 @@ export default function PlanSearchScreen() {
     let q = supabase
       .from('guides')
       .select(`
-        id, title, description, summary, hero_media_url,
+        id, title, summary, hero_media_url,
         primary_location_name, difficulty_level, stewardship_level,
         instantiation_count, total_step_completions, created_at
       `)

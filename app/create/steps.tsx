@@ -7,8 +7,13 @@
  * This screen is launched from phases.tsx with a `phaseLocalId` param.
  *
  * Each step has:
- * - atomic_action_text (required) — the imperative action
+ * - atomic_action_text (required for 'action') — the imperative action / label
+ * - step_type — 'action' | 'checklist' | 'timer'
+ * - checklist_items — sub-items for checklist steps
+ * - timer_seconds — countdown duration for timer steps
+ * - is_optional — whether this step is required for completion
  * - location_name (optional) — venue / place
+ * - latitude / longitude (optional) — GPS coordinates for in-step navigation
  * - curation_notes (optional) — the "why" behind the action
  * - beginner_mistakes (optional) — common pitfalls
  * - intent_tag — General / Safety / Gear_Check / Milestone
@@ -28,7 +33,7 @@ import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import type { DraftStep } from '@/lib/GuideCreationContext';
 import { useGuideCreation } from '@/lib/GuideCreationContext';
-import type { Enums } from '@/lib/database.types';
+import type { ChecklistItem, Enums } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
@@ -59,6 +64,12 @@ const EMPTY_FORM: StepForm = {
   intent_tag:         'General',
   linked_guide_id:    null,
   linked_guide_title: null,
+  step_type:          'action',
+  checklist_items:    [],
+  timer_seconds:      null,
+  is_optional:        false,
+  latitude:           '',
+  longitude:          '',
 };
 
 // ---------------------------------------------------------------------------
@@ -76,12 +87,14 @@ export default function StepsScreen() {
   const { phases, addStep, updateStep, removeStep, reorderSteps } = useGuideCreation();
   const phase = phases.find(p => p.localId === phaseLocalId);
 
-  const [showForm,    setShowForm]    = useState(false);
-  const [form,        setForm]        = useState<StepForm>(EMPTY_FORM);
-  const [editingId,   setEditingId]   = useState<string | null>(null);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [guideSearch, setGuideSearch] = useState('');
-  const [guideResults, setGuideResults] = useState<{ id: string; title: string }[]>([]);
+  const [showForm,             setShowForm]             = useState(false);
+  const [form,                 setForm]                 = useState<StepForm>(EMPTY_FORM);
+  const [editingId,            setEditingId]            = useState<string | null>(null);
+  const [showAdvanced,         setShowAdvanced]         = useState(false);
+  const [guideSearch,          setGuideSearch]          = useState('');
+  const [guideResults,         setGuideResults]         = useState<{ id: string; title: string }[]>([]);
+  const [newChecklistItem,     setNewChecklistItem]     = useState('');
+  const [checklistItemRequired, setChecklistItemRequired] = useState(true);
 
   if (!phase) {
     return (
@@ -96,16 +109,31 @@ export default function StepsScreen() {
   // -------------------------------------------------------------------------
 
   function handleSaveStep() {
-    if (!form.atomic_action_text.trim()) return;
+    if (form.step_type === 'action' && !form.atomic_action_text.trim()) return;
+    if (form.step_type === 'checklist' && form.checklist_items.length === 0) {
+      Alert.alert('Add items', 'A checklist step needs at least one item.');
+      return;
+    }
+    if (form.step_type === 'timer' && !form.timer_seconds) {
+      Alert.alert('Set duration', 'A timer step needs a duration.');
+      return;
+    }
+
+    const savedForm = {
+      ...form,
+      atomic_action_text: form.atomic_action_text.trim(),
+    };
 
     if (editingId) {
-      updateStep(phaseLocalId, editingId, { ...form, atomic_action_text: form.atomic_action_text.trim() });
+      updateStep(phaseLocalId, editingId, savedForm);
       setEditingId(null);
     } else {
-      addStep(phaseLocalId, { ...form, atomic_action_text: form.atomic_action_text.trim() });
+      addStep(phaseLocalId, savedForm);
     }
 
     setForm(EMPTY_FORM);
+    setNewChecklistItem('');
+    setChecklistItemRequired(true);
     setShowForm(false);
     setShowAdvanced(false);
   }
@@ -121,6 +149,12 @@ export default function StepsScreen() {
       intent_tag:         step.intent_tag,
       linked_guide_id:    step.linked_guide_id,
       linked_guide_title: step.linked_guide_title,
+      step_type:          step.step_type,
+      checklist_items:    step.checklist_items,
+      timer_seconds:      step.timer_seconds,
+      is_optional:        step.is_optional,
+      latitude:           step.latitude,
+      longitude:          step.longitude,
     });
     setEditingId(stepLocalId);
     setShowForm(true);
@@ -131,6 +165,23 @@ export default function StepsScreen() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => removeStep(phaseLocalId, stepLocalId) },
     ]);
+  }
+
+  // -------------------------------------------------------------------------
+  // Checklist item helpers
+  // -------------------------------------------------------------------------
+
+  function addChecklistItem() {
+    if (!newChecklistItem.trim()) return;
+    const id = `ci-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setForm(prev => ({
+      ...prev,
+      checklist_items: [
+        ...prev.checklist_items,
+        { id, label: newChecklistItem.trim(), required: checklistItemRequired },
+      ],
+    }));
+    setNewChecklistItem('');
   }
 
   // -------------------------------------------------------------------------
@@ -230,6 +281,20 @@ export default function StepsScreen() {
                     </Text>
                   </View>
                 )}
+                {step.step_type === 'checklist' && (
+                  <View style={[styles.tagChip, { borderColor: '#375E3F' }]}>
+                    <Text style={[styles.tagChipText, { color: '#375E3F' }]}>
+                      Checklist ({step.checklist_items?.length ?? 0})
+                    </Text>
+                  </View>
+                )}
+                {step.step_type === 'timer' && step.timer_seconds && (
+                  <View style={[styles.tagChip, { borderColor: '#BC8A2F' }]}>
+                    <Text style={[styles.tagChipText, { color: '#BC8A2F' }]}>
+                      ⏱ {Math.round(step.timer_seconds / 60)}m
+                    </Text>
+                  </View>
+                )}
                 {step.location_name ? (
                   <Text style={[styles.metaText, { color: subText }]} numberOfLines={1}>
                     📍 {step.location_name}
@@ -237,9 +302,12 @@ export default function StepsScreen() {
                 ) : null}
                 {step.linked_guide_id ? (
                   <Text style={[styles.metaText, { color: '#BC8A2F' }]} numberOfLines={1}>
-                    ⎇  Mastery Tree
+                    ↳ {step.linked_guide_title ?? 'Embedded Guide'}
                   </Text>
                 ) : null}
+                {step.is_optional && (
+                  <Text style={[styles.metaText, { color: '#786C50' }]}>optional</Text>
+                )}
               </View>
 
               {/* Actions */}
@@ -264,11 +332,41 @@ export default function StepsScreen() {
               {editingId ? 'Edit Step' : 'New Step'}
             </Text>
 
-            {/* Action */}
-            <Text style={[styles.fieldLabel, { color: subText }]}>Action <Text style={{ color: '#BC2F38' }}>*</Text></Text>
+            {/* Step type selector */}
+            <Text style={[styles.fieldLabel, { color: subText }]}>Step Type</Text>
+            <View style={styles.tagRow}>
+              {(['action', 'checklist', 'timer'] as const).map(type => {
+                const labels = { action: 'Action', checklist: 'Checklist', timer: 'Timer' };
+                const icons  = { action: 'flash-outline', checklist: 'checkbox-outline', timer: 'timer-outline' };
+                const isSelected = form.step_type === type;
+                return (
+                  <TouchableOpacity
+                    key={type}
+                    onPress={() => setForm(prev => ({ ...prev, step_type: type }))}
+                    style={StyleSheet.flatten([
+                      styles.tagPill,
+                      { borderColor: isSelected ? theme.tint : (isDark ? '#1e2330' : '#ddd') },
+                      isSelected && { backgroundColor: `${theme.tint}18` },
+                      { flexDirection: 'row', alignItems: 'center', gap: 4 },
+                    ])}
+                  >
+                    <Ionicons name={icons[type] as any} size={13} color={isSelected ? theme.tint : subText} />
+                    <Text style={[styles.tagPillText, { color: isSelected ? theme.tint : subText }]}>
+                      {labels[type]}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Action / Label */}
+            <Text style={[styles.fieldLabel, { color: subText }]}>
+              {form.step_type === 'action' ? 'Action' : 'Label'}
+              {form.step_type === 'action' && <Text style={{ color: '#BC2F38' }}> *</Text>}
+            </Text>
             <TextInput
               style={StyleSheet.flatten([styles.input, styles.inputTall, { color: theme.text, borderColor: isDark ? '#1e2330' : '#ddd', backgroundColor: isDark ? '#080A12' : '#f9f9f9' }])}
-              placeholder="e.g., Turn left at the cairn"
+              placeholder={form.step_type === 'action' ? 'e.g., Turn left at the cairn' : 'e.g., Pre-hike gear check'}
               placeholderTextColor={subText}
               value={form.atomic_action_text}
               onChangeText={t => setForm(prev => ({ ...prev, atomic_action_text: t }))}
@@ -276,6 +374,91 @@ export default function StepsScreen() {
               autoFocus
               maxLength={200}
             />
+
+            {/* Checklist items — shown only when step_type = 'checklist' */}
+            {form.step_type === 'checklist' && (
+              <>
+                <Text style={[styles.fieldLabel, { color: subText }]}>Checklist Items</Text>
+                <Text style={[styles.fieldHint, { color: subText }]}>
+                  Required items must all be checked before marking the step complete.
+                </Text>
+                {form.checklist_items.map((item, idx) => (
+                  <View key={item.id} style={[styles.checklistItemRow, { borderColor: isDark ? '#1e2330' : '#ddd' }]}>
+                    <View style={[styles.requiredDot, { backgroundColor: item.required ? theme.tint : '#ccc' }]} />
+                    <Text style={[{ flex: 1, color: theme.text, fontSize: 14 }]}>{item.label}</Text>
+                    <TouchableOpacity
+                      onPress={() => setForm(prev => ({
+                        ...prev,
+                        checklist_items: prev.checklist_items.map((ci, i) =>
+                          i === idx ? { ...ci, required: !ci.required } : ci
+                        ),
+                      }))}
+                    >
+                      <Text style={{ color: subText, fontSize: 12 }}>
+                        {item.required ? 'Required' : 'Optional'}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => setForm(prev => ({
+                        ...prev,
+                        checklist_items: prev.checklist_items.filter((_, i) => i !== idx),
+                      }))}
+                      style={{ marginLeft: 8 }}
+                    >
+                      <Ionicons name="close-circle" size={16} color="#BC2F38" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                  <TextInput
+                    style={StyleSheet.flatten([styles.input, { flex: 1, color: theme.text, borderColor: isDark ? '#1e2330' : '#ddd', backgroundColor: isDark ? '#080A12' : '#f9f9f9' }])}
+                    placeholder="Add an item…"
+                    placeholderTextColor={subText}
+                    value={newChecklistItem}
+                    onChangeText={setNewChecklistItem}
+                    onSubmitEditing={addChecklistItem}
+                    returnKeyType="done"
+                  />
+                  <TouchableOpacity
+                    style={[styles.saveBtn, { flex: 0, paddingHorizontal: 14, backgroundColor: newChecklistItem.trim() ? theme.tint : '#333' }]}
+                    onPress={addChecklistItem}
+                  >
+                    <Text style={styles.saveBtnText}>+</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+
+            {/* Timer duration — shown only when step_type = 'timer' */}
+            {form.step_type === 'timer' && (
+              <>
+                <Text style={[styles.fieldLabel, { color: subText }]}>Duration</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                  {[5, 10, 15, 20, 30, 45, 60].map(mins => {
+                    const secs = mins * 60;
+                    const isSelected = form.timer_seconds === secs;
+                    return (
+                      <TouchableOpacity
+                        key={mins}
+                        onPress={() => setForm(prev => ({ ...prev, timer_seconds: secs }))}
+                        style={StyleSheet.flatten([
+                          styles.tagPill,
+                          { borderColor: isSelected ? theme.tint : (isDark ? '#1e2330' : '#ddd') },
+                          isSelected && { backgroundColor: `${theme.tint}18` },
+                        ])}
+                      >
+                        <Text style={[styles.tagPillText, { color: isSelected ? theme.tint : subText }]}>
+                          {mins}m
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <Text style={[styles.fieldHint, { color: subText, marginTop: 8 }]}>
+                  A countdown timer starts when the user reaches this step.
+                </Text>
+              </>
+            )}
 
             {/* Location */}
             <Text style={[styles.fieldLabel, { color: subText }]}>Location (optional)</Text>
@@ -310,6 +493,72 @@ export default function StepsScreen() {
                 );
               })}
             </View>
+
+            {/* Optional step toggle */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 16, gap: 12 }}>
+              <TouchableOpacity
+                onPress={() => setForm(prev => ({ ...prev, is_optional: !prev.is_optional }))}
+                style={[
+                  styles.tagPill,
+                  { borderColor: form.is_optional ? '#786C50' : (isDark ? '#1e2330' : '#ddd') },
+                  form.is_optional && { backgroundColor: 'rgba(120,108,80,0.12)' },
+                ]}
+              >
+                <Text style={[styles.tagPillText, { color: form.is_optional ? '#786C50' : subText }]}>
+                  {form.is_optional ? 'Optional step' : 'Mark as optional'}
+                </Text>
+              </TouchableOpacity>
+              {form.is_optional && (
+                <Text style={{ color: subText, fontSize: 12, flex: 1 }}>
+                  Won't count toward required progress
+                </Text>
+              )}
+            </View>
+
+            {/* Embed a Guide */}
+            <Text style={[styles.fieldLabel, { color: subText }]}>Embed a Guide (optional)</Text>
+            <Text style={[styles.fieldHint, { color: subText }]}>
+              Make this step a portal into another Guide — great for bundling guides into grand quests.
+            </Text>
+            {form.linked_guide_id ? (
+              <View style={[styles.linkedGuide, { borderColor: '#BC8A2F' }]}>
+                <Ionicons name="book-outline" size={14} color="#BC8A2F" />
+                <Text style={[styles.linkedGuideTitle, { color: '#BC8A2F' }]} numberOfLines={1}>
+                  {form.linked_guide_title ?? 'Embedded Guide'}
+                </Text>
+                <TouchableOpacity onPress={() => setForm(prev => ({ ...prev, linked_guide_id: null, linked_guide_title: null }))}>
+                  <Ionicons name="close-circle" size={16} color="#BC2F38" />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <>
+                <TextInput
+                  style={StyleSheet.flatten([styles.input, { color: theme.text, borderColor: isDark ? '#1e2330' : '#ddd', backgroundColor: isDark ? '#080A12' : '#f9f9f9' }])}
+                  placeholder="Search for a Guide to embed…"
+                  placeholderTextColor={subText}
+                  value={guideSearch}
+                  onChangeText={searchGuides}
+                />
+                {guideResults.map(g => (
+                  <TouchableOpacity
+                    key={g.id}
+                    style={[styles.guideResult, { borderBottomColor: isDark ? '#1e2330' : '#eee' }]}
+                    onPress={() => {
+                      setForm(prev => ({
+                        ...prev,
+                        linked_guide_id:    g.id,
+                        linked_guide_title: g.title,
+                        atomic_action_text: prev.atomic_action_text.trim() || g.title,
+                      }));
+                      setGuideSearch('');
+                      setGuideResults([]);
+                    }}
+                  >
+                    <Text style={[styles.guideResultText, { color: theme.text }]}>{g.title}</Text>
+                  </TouchableOpacity>
+                ))}
+              </>
+            )}
 
             {/* Advanced toggle */}
             <TouchableOpacity
@@ -346,45 +595,29 @@ export default function StepsScreen() {
                   multiline
                 />
 
-                {/* Mastery Tree portal */}
-                <Text style={[styles.fieldLabel, { color: subText }]}>Link a Guide (Mastery Tree)</Text>
+                {/* Coordinates */}
+                <Text style={[styles.fieldLabel, { color: subText }]}>Coordinates (optional)</Text>
                 <Text style={[styles.fieldHint, { color: subText }]}>
-                  Completing this linked Guide will automatically complete this step.
+                  Add GPS coordinates to enable in-step navigation. Find them in Google Maps by long-pressing a location.
                 </Text>
-                {form.linked_guide_id ? (
-                  <View style={[styles.linkedGuide, { borderColor: '#BC8A2F' }]}>
-                    <Ionicons name="git-branch-outline" size={14} color="#BC8A2F" />
-                    <Text style={[styles.linkedGuideTitle, { color: '#BC8A2F' }]} numberOfLines={1}>
-                      {form.linked_guide_title ?? 'Linked Guide'}
-                    </Text>
-                    <TouchableOpacity onPress={() => setForm(prev => ({ ...prev, linked_guide_id: null, linked_guide_title: null }))}>
-                      <Ionicons name="close-circle" size={16} color="#BC2F38" />
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <>
-                    <TextInput
-                      style={StyleSheet.flatten([styles.input, { color: theme.text, borderColor: isDark ? '#1e2330' : '#ddd', backgroundColor: isDark ? '#080A12' : '#f9f9f9' }])}
-                      placeholder="Search for a Guide to link…"
-                      placeholderTextColor={subText}
-                      value={guideSearch}
-                      onChangeText={searchGuides}
-                    />
-                    {guideResults.map(g => (
-                      <TouchableOpacity
-                        key={g.id}
-                        style={[styles.guideResult, { borderBottomColor: isDark ? '#1e2330' : '#eee' }]}
-                        onPress={() => {
-                          setForm(prev => ({ ...prev, linked_guide_id: g.id, linked_guide_title: g.title }));
-                          setGuideSearch('');
-                          setGuideResults([]);
-                        }}
-                      >
-                        <Text style={[styles.guideResultText, { color: theme.text }]}>{g.title}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </>
-                )}
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TextInput
+                    style={StyleSheet.flatten([styles.input, { flex: 1, color: theme.text, borderColor: isDark ? '#1e2330' : '#ddd', backgroundColor: isDark ? '#080A12' : '#f9f9f9' }])}
+                    placeholder="Latitude (e.g., 53.5461)"
+                    placeholderTextColor={subText}
+                    keyboardType="decimal-pad"
+                    value={form.latitude ?? ''}
+                    onChangeText={t => setForm(prev => ({ ...prev, latitude: t }))}
+                  />
+                  <TextInput
+                    style={StyleSheet.flatten([styles.input, { flex: 1, color: theme.text, borderColor: isDark ? '#1e2330' : '#ddd', backgroundColor: isDark ? '#080A12' : '#f9f9f9' }])}
+                    placeholder="Longitude (e.g., -113.4938)"
+                    placeholderTextColor={subText}
+                    keyboardType="decimal-pad"
+                    value={form.longitude ?? ''}
+                    onChangeText={t => setForm(prev => ({ ...prev, longitude: t }))}
+                  />
+                </View>
               </>
             )}
 
@@ -392,12 +625,25 @@ export default function StepsScreen() {
             <View style={styles.formBtns}>
               <TouchableOpacity
                 style={[styles.cancelBtn, { borderColor: isDark ? '#1e2330' : '#ddd' }]}
-                onPress={() => { setShowForm(false); setEditingId(null); setForm(EMPTY_FORM); setShowAdvanced(false); }}
+                onPress={() => {
+                  setShowForm(false);
+                  setEditingId(null);
+                  setForm(EMPTY_FORM);
+                  setNewChecklistItem('');
+                  setChecklistItemRequired(true);
+                  setShowAdvanced(false);
+                }}
               >
                 <Text style={[styles.cancelBtnText, { color: subText }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.saveBtn, { backgroundColor: form.atomic_action_text.trim() ? theme.tint : '#333' }]}
+                style={[styles.saveBtn, {
+                  backgroundColor: (
+                    (form.step_type === 'action' && form.atomic_action_text.trim()) ||
+                    (form.step_type === 'checklist' && form.checklist_items.length > 0) ||
+                    (form.step_type === 'timer' && !!form.timer_seconds)
+                  ) ? theme.tint : '#333',
+                }]}
                 onPress={handleSaveStep}
               >
                 <Text style={styles.saveBtnText}>{editingId ? 'Save Step' : 'Add Step'}</Text>
@@ -486,6 +732,22 @@ const styles = StyleSheet.create({
   tagRow:       { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
   tagPill:      { borderWidth: 1.5, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 6 },
   tagPillText:  { fontSize: 12, fontWeight: '700' },
+
+  // Checklist
+  checklistItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 6,
+  },
+  requiredDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
 
   advancedToggle: { marginTop: 16, alignSelf: 'flex-start' },
   advancedToggleText: { fontSize: 13, fontWeight: '700' },

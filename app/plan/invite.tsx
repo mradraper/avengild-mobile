@@ -22,6 +22,7 @@ import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -100,6 +101,24 @@ export default function InviteScreen() {
 
   function removeInvitee(userId: string) {
     setInvited(prev => prev.filter(u => u.id !== userId));
+  }
+
+  // Share an invitation through the system share sheet (Messages, WhatsApp,
+  // email, social media, etc.). The event doesn't exist in the DB yet, so we
+  // share a pre-formatted message that the recipient can use to find the Guide
+  // and join after the event is created. A deep-link will replace this once
+  // the event-creation pipeline includes a post-save share step.
+  async function handleShareInvitation() {
+    const title = params.guideTitle ?? 'an adventure';
+    const message =
+      `Hey! I'm planning an event on Avengild based on "${title}" and would love you to join. ` +
+      `Download Avengild and search for me to get the invite once I've locked in the details.`;
+
+    try {
+      await Share.share({ message, title: `Join me for: ${title}` });
+    } catch {
+      // User cancelled — do nothing
+    }
   }
 
   function handleContinue() {
@@ -201,6 +220,19 @@ export default function InviteScreen() {
             ? 'Creating a solo event. You can invite friends later.'
             : `${invited.length} friend${invited.length > 1 ? 's' : ''} invited.`}
         </Text>
+
+        {/* Share via system share sheet — WhatsApp, Messages, email, etc. */}
+        <TouchableOpacity
+          style={[styles.shareBtn, { borderColor: theme.tint }]}
+          onPress={handleShareInvitation}
+          activeOpacity={0.75}
+        >
+          <Ionicons name="share-outline" size={18} color={theme.tint} style={{ marginRight: 8 }} />
+          <Text style={[styles.shareBtnText, { color: theme.tint }]}>
+            Share Invitation
+          </Text>
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={[styles.continueBtn, { backgroundColor: theme.tint }]}
           onPress={handleContinue}
@@ -277,6 +309,17 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   footerNote:      { fontSize: 13, textAlign: 'center' },
+
+  shareBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 13,
+    borderRadius: 12,
+    borderWidth: 1.5,
+  },
+  shareBtnText: { fontSize: 15, fontWeight: '700' },
+
   continueBtn:     { paddingVertical: 15, borderRadius: 12, alignItems: 'center' },
   continueBtnText: { color: '#fff', fontSize: 17, fontWeight: '800' },
 });

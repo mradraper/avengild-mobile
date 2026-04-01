@@ -14,6 +14,7 @@ type Props = {
   onStepToggle: (stepId: string) => void;
   currentIndex: number;
   onIndexChange: (index: number) => void;
+  onLinkedGuidePress?: (guideId: string) => void;
 };
 
 /**
@@ -21,7 +22,7 @@ type Props = {
  * Uses native ScrollView pagingEnabled for real swipe gestures — no new
  * dependencies required.
  */
-export function SequentialView({ steps, completedSteps, onStepToggle, currentIndex, onIndexChange }: Props) {
+export function SequentialView({ steps, completedSteps, onStepToggle, currentIndex, onIndexChange, onLinkedGuidePress }: Props) {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'dark'];
   const scrollRef = useRef<ScrollView>(null);
@@ -54,6 +55,7 @@ export function SequentialView({ steps, completedSteps, onStepToggle, currentInd
 
   const currentStep = steps[currentIndex];
   const isCurrentCompleted = currentStep ? completedSteps.has(currentStep.id) : false;
+  const isCurrentEmbedded = !!(currentStep?.linked_guide_id);
 
   return (
     <View style={styles.container}>
@@ -74,6 +76,7 @@ export function SequentialView({ steps, completedSteps, onStepToggle, currentInd
               stepNumber={index + 1}
               isCompleted={completedSteps.has(step.id)}
               onPress={onStepToggle}
+              onLinkedGuidePress={onLinkedGuidePress}
             />
           </View>
         ))}
@@ -89,24 +92,34 @@ export function SequentialView({ steps, completedSteps, onStepToggle, currentInd
           <Ionicons name="chevron-back" size={22} color={currentIndex === 0 ? '#786C50' : theme.tint} />
         </TouchableOpacity>
 
-        {/* Mark Done / Undo button */}
-        <TouchableOpacity
-          style={[
-            styles.doneButton,
-            { backgroundColor: isCurrentCompleted ? '#786C50' : theme.tint },
-          ]}
-          onPress={() => currentStep && onStepToggle(currentStep.id)}
-        >
-          <Ionicons
-            name={isCurrentCompleted ? 'arrow-undo-outline' : 'checkmark-circle-outline'}
-            size={18}
-            color="#fff"
-            style={{ marginRight: 6 }}
-          />
-          <Text style={styles.doneButtonText}>
-            {isCurrentCompleted ? 'Undo' : 'Mark Done'}
-          </Text>
-        </TouchableOpacity>
+        {/* Mark Done / Undo / Open Guide button */}
+        {isCurrentEmbedded ? (
+          <TouchableOpacity
+            style={[styles.doneButton, { backgroundColor: '#BC8A2F' }]}
+            onPress={() => currentStep?.linked_guide_id && onLinkedGuidePress?.(currentStep.linked_guide_id)}
+          >
+            <Ionicons name="book-outline" size={18} color="#fff" style={{ marginRight: 6 }} />
+            <Text style={styles.doneButtonText}>Open Guide</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[
+              styles.doneButton,
+              { backgroundColor: isCurrentCompleted ? '#786C50' : theme.tint },
+            ]}
+            onPress={() => currentStep && onStepToggle(currentStep.id)}
+          >
+            <Ionicons
+              name={isCurrentCompleted ? 'arrow-undo-outline' : 'checkmark-circle-outline'}
+              size={18}
+              color="#fff"
+              style={{ marginRight: 6 }}
+            />
+            <Text style={styles.doneButtonText}>
+              {isCurrentCompleted ? 'Undo' : 'Mark Done'}
+            </Text>
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity
           onPress={handleNext}

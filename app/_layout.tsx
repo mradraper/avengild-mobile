@@ -78,6 +78,10 @@ function RootLayoutNav() {
         <Stack.Screen name="plan" options={{ presentation: 'modal', headerShown: false }} />
         {/* Guide Creation wizard — full-screen modal from the Codex hub */}
         <Stack.Screen name="create" options={{ presentation: 'modal', headerShown: false }} />
+        {/* Event detail — pushes from Calendar or Codex */}
+        <Stack.Screen name="event" options={{ headerShown: false }} />
+        {/* Profile view — pushes from Guild roster or event crew */}
+        <Stack.Screen name="profile" options={{ headerShown: false }} />
       </Stack>
     </ThemeProvider>
   );

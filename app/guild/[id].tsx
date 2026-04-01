@@ -1,10 +1,11 @@
+import ChatView from '@/components/chat/ChatView';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { supabase } from '@/lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Image, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Animated, FlatList, Image, Keyboard, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 
 // --- TYPES ---
 type GuildData = {
@@ -45,10 +46,41 @@ export default function GuildScreen() {
   const [members, setMembers] = useState<MemberData[]>([]);
   const [hearthFeed, setHearthFeed] = useState<HearthItem[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  
+  // Lazily resolved: undefined until the first message is sent or the thread
+  // is discovered from the DB. ChatView handles creation automatically.
+  const [chatThreadId, setChatThreadId] = useState<string | undefined>(undefined);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'hearth' | 'chat' | 'members'>('hearth');
+  // Default tab is Chat — the primary social interaction surface of a Guild.
+  const [activeTab, setActiveTab] = useState<'hearth' | 'chat' | 'forums' | 'roster'>('chat');
+
+  // When the keyboard opens in Chat tab, collapse the Guild header so the
+  // full screen height is available for messages and the input bar.
+  const headerAnim = useRef(new Animated.Value(1)).current;
+  const [chatKeyboardOpen, setChatKeyboardOpen] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', () => {
+      if (activeTab === 'chat') {
+        setChatKeyboardOpen(true);
+        Animated.timing(headerAnim, {
+          toValue: 0,
+          duration: 180,
+          useNativeDriver: false,
+        }).start();
+      }
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setChatKeyboardOpen(false);
+      Animated.timing(headerAnim, {
+        toValue: 1,
+        duration: 180,
+        useNativeDriver: false,
+      }).start();
+    });
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, [activeTab]);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setCurrentUserId(data.user?.id || null));
@@ -57,8 +89,8 @@ export default function GuildScreen() {
 
   async function loadAllData() {
     if (!id || typeof id !== 'string') return;
-    if (!guild) setLoading(true); 
-    await Promise.all([fetchGuild(), fetchMembers(), fetchHearth()]);
+    if (!guild) setLoading(true);
+    await Promise.all([fetchGuild(), fetchMembers(), fetchHearth(), fetchChatThread()]);
     setLoading(false);
   }
 
@@ -107,6 +139,19 @@ export default function GuildScreen() {
   };
 
   // --- FETCHERS ---
+
+  // Look up the guild's existing chat thread (if one has already been created).
+  // ChatView will create it lazily on first send if it doesn't exist yet.
+  async function fetchChatThread() {
+    if (!id) return;
+    const { data } = await supabase
+      .from('chat_threads')
+      .select('id')
+      .eq('guild_id', id)
+      .maybeSingle();
+    if (data) setChatThreadId(data.id);
+  }
+
   async function fetchGuild() {
     if (!id) return;
     const { data } = await supabase.from('guilds').select('*').eq('id', id).single();
@@ -192,7 +237,7 @@ export default function GuildScreen() {
   }
 
   // --- RENDER ---
-  const renderTab = (key: 'hearth' | 'chat' | 'members', label: string, icon: any) => (
+  const renderTab = (key: 'hearth' | 'chat' | 'forums' | 'roster', label: string, icon: any) => (
     <Pressable 
       style={[styles.tab, activeTab === key && { borderBottomColor: theme.tint, borderBottomWidth: 3 }]}
       onPress={() => setActiveTab(key)}
@@ -212,29 +257,56 @@ export default function GuildScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <Stack.Screen 
+      <Stack.Screen
         options={{
-          title: 'Guild Hall', 
+          // When the chat keyboard is open, collapse the native header too
+          // and show a focused "Guild Chat" title with a clean back button.
+          title: chatKeyboardOpen ? `${guild?.name ?? 'Guild'} Chat` : 'Guild Hall',
           headerTitleStyle: {
-            fontFamily: 'Chivo_900Black', 
-            fontSize: 20, 
+            fontFamily: 'Chivo_900Black',
+            fontSize: chatKeyboardOpen ? 17 : 20,
           },
           headerBackTitle: '',
           headerTintColor: theme.tint,
-        }} 
+        }}
       />
-      
-      <View style={[styles.header, { backgroundColor: theme.cardBackground }]}>
+
+      {/* Guild identity + tab bar — animated out when chat keyboard opens */}
+      <Animated.View
+        style={[
+          styles.header,
+          { backgroundColor: theme.cardBackground },
+          {
+            maxHeight: headerAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, 200],
+            }),
+            opacity: headerAnim,
+            overflow: 'hidden',
+          },
+        ]}
+      >
         <View style={{ padding: 16, alignItems: 'center' }}>
             <Text style={[styles.guildName, { color: theme.text }]}>{guild?.name || 'Loading...'}</Text>
             <Text style={{ color: '#999' }}>@{guild?.handle}</Text>
         </View>
         <View style={styles.tabBar}>
-            {renderTab('hearth', 'The Hearth', 'bonfire-outline')}
-            {renderTab('chat', 'Chat', 'chatbubbles-outline')}
-            {renderTab('members', 'Roster', 'people-outline')}
+            {renderTab('hearth',  'Hearth',  'bonfire-outline')}
+            {renderTab('chat',    'Chat',    'chatbubbles-outline')}
+            {renderTab('forums',  'Forums',  'newspaper-outline')}
+            {renderTab('roster',  'Roster',  'people-outline')}
         </View>
-      </View>
+      </Animated.View>
+
+      {/* When keyboard is open in Chat, show a slim tab-restore bar */}
+      {chatKeyboardOpen && (
+        <View style={[styles.chatCompactBar, { backgroundColor: theme.cardBackground, borderBottomColor: '#eee' }]}>
+          {renderTab('hearth',  'Hearth',  'bonfire-outline')}
+          {renderTab('chat',    'Chat',    'chatbubbles-outline')}
+          {renderTab('forums',  'Forums',  'newspaper-outline')}
+          {renderTab('roster',  'Roster',  'people-outline')}
+        </View>
+      )}
 
       <View style={styles.content}>
         {activeTab === 'hearth' && (
@@ -298,21 +370,39 @@ export default function GuildScreen() {
            />
         )}
 
-        {/* Keeping other tabs same as before... */}
-        {activeTab === 'chat' && (
+        {activeTab === 'chat' && typeof id === 'string' && (
+          <ChatView
+            threadId={chatThreadId}
+            guildId={id}
+            onThreadCreated={(tid) => setChatThreadId(tid)}
+          />
+        )}
+
+        {/* Forums — planned feature, placeholder UI */}
+        {activeTab === 'forums' && (
             <View style={styles.placeholderContainer}>
-                <Ionicons name="chatbubbles-outline" size={64} color="#ccc" />
-                <Text style={{ color: '#999', marginTop: 16 }}>Guild Chat Coming Soon</Text>
+                <Ionicons name="newspaper-outline" size={64} color="#ccc" />
+                <Text style={{ color: '#999', marginTop: 16, fontSize: 17, fontWeight: 'bold' }}>
+                    Forums Coming Soon
+                </Text>
+                <Text style={{ color: '#666', textAlign: 'center', marginTop: 8, lineHeight: 20, paddingHorizontal: 16 }}>
+                    Long-form, threaded discussions for your Guild — like a mini Reddit.
+                    Share trip reports, debate routes, and preserve knowledge.
+                </Text>
             </View>
         )}
 
-        {activeTab === 'members' && (
+        {/* Roster — accessible as a 4th tab, not in the primary three */}
+        {activeTab === 'roster' && (
             <FlatList
                 data={members}
                 keyExtractor={(item) => item.user_id}
                 contentContainerStyle={{ padding: 20 }}
                 renderItem={({ item }) => (
-                    <View style={[styles.memberCard, { backgroundColor: theme.cardBackground }]}>
+                    <Pressable
+                      style={[styles.memberCard, { backgroundColor: theme.cardBackground }]}
+                      onPress={() => router.push({ pathname: '/profile/[id]', params: { id: item.user_id } })}
+                    >
                         <Image source={{ uri: item.profile?.avatar_url || 'https://via.placeholder.com/50' }} style={styles.avatar} />
                         <View style={{ flex: 1 }}>
                             <Text style={[styles.memberName, { color: theme.text }]}>{item.profile?.full_name}</Text>
@@ -321,7 +411,7 @@ export default function GuildScreen() {
                         <View style={[styles.roleBadge, { backgroundColor: '#eee' }]}>
                             <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#666' }}>{item.role?.name.toUpperCase()}</Text>
                         </View>
-                    </View>
+                    </Pressable>
                 )}
             />
         )}
@@ -343,6 +433,12 @@ const styles = StyleSheet.create({
   },
   
   tabBar: { flexDirection: 'row' },
+  // Compact tab bar shown while the keyboard is open in Chat — no guild identity text,
+  // just the four tab icons so the user can switch away without dismissing the keyboard.
+  chatCompactBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+  },
   tab: { flex: 1, alignItems: 'center', paddingVertical: 12, borderBottomWidth: 3, borderBottomColor: 'transparent' },
   tabText: { fontSize: 14, fontWeight: 'bold', marginTop: 4 },
   

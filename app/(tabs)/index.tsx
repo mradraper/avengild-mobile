@@ -26,8 +26,12 @@ export default function HomeScreen() {
       // 2. QUERY: Removed limit(1) and single() to fetch all guides
       const { data, error } = await supabase
         .from('guides')
-        .select('*')
-        .order('created_at', { ascending: false });
+        .select('id, title, summary, hero_media_url, primary_location_name, difficulty_level, instantiation_count, total_step_completions')
+        .eq('stewardship_level', 'Public')
+        .eq('is_archived', false)
+        .order('instantiation_count', { ascending: false })
+        .order('total_step_completions', { ascending: false })
+        .limit(40);
 
       if (error) {
         console.error('Error fetching guides:', error);

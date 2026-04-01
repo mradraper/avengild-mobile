@@ -1,72 +1,73 @@
-import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { Link, Tabs } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { Tabs } from 'expo-router';
 import React from 'react';
-import { Pressable } from 'react-native';
 
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 
-// Helper component to render icons
-function TabBarIcon(props: {
-  name: React.ComponentProps<typeof FontAwesome>['name'];
+function TabIcon({
+  name,
+  color,
+}: {
+  name: React.ComponentProps<typeof Ionicons>['name'];
   color: string;
 }) {
-  return <FontAwesome size={28} style={{ marginBottom: -3 }} {...props} />;
+  return <Ionicons name={name} size={24} color={color} />;
 }
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
+  const theme = Colors[colorScheme ?? 'dark'];
+  const isDark = colorScheme === 'dark';
 
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
-        headerShown: false, // We hide tab headers to let the Stack handle them (or custom headers)
+        tabBarActiveTintColor: theme.tint,
+        tabBarInactiveTintColor: isDark ? '#555' : '#999',
+        headerShown: false,
+        tabBarStyle: {
+          backgroundColor: theme.background,
+          borderTopColor: isDark ? '#1e2330' : '#e8e8e8',
+          borderTopWidth: 1,
+        },
         tabBarLabelStyle: {
-          fontFamily: 'Chivo_700Bold', // Bold labels
+          fontFamily: 'Chivo_700Bold',
           fontSize: 10,
-          marginBottom: 4
-        }
-      }}>
-      
-      {/* 1. DISCOVERY (Home) */}
+          marginBottom: 4,
+        },
+      }}
+    >
+      {/* ── Hidden screens — not rendered as tabs ─────────────────────── */}
+      {/* index.tsx: Discovery content is now the Discover segment of Codex */}
+      <Tabs.Screen name="index"   options={{ href: null }} />
+      {/* profile.tsx: Auth + profile content is now within the Guilds tab */}
+      <Tabs.Screen name="profile" options={{ href: null }} />
+
+      {/* ── 1. CALENDAR (leftmost) ─────────────────────────────────────── */}
       <Tabs.Screen
-        name="index"
+        name="calendar"
         options={{
-          title: 'Discovery',
-          tabBarIcon: ({ color }) => <TabBarIcon name="compass" color={color} />,
-          headerRight: () => (
-            <Link href="/modal" asChild>
-              <Pressable>
-                {({ pressed }) => (
-                  <FontAwesome
-                    name="info-circle"
-                    size={25}
-                    color={Colors[colorScheme ?? 'light'].text}
-                    style={{ marginRight: 15, opacity: pressed ? 0.5 : 1 }}
-                  />
-                )}
-              </Pressable>
-            </Link>
-          ),
+          title: 'Calendar',
+          tabBarIcon: ({ color }) => <TabIcon name="calendar-outline" color={color} />,
         }}
       />
 
-      {/* 2. THE CODEX (Creator Tool) */}
+      {/* ── 2. CODEX (centre) ─────────────────────────────────────────── */}
       <Tabs.Screen
         name="codex"
         options={{
           title: 'Codex',
-          tabBarIcon: ({ color }) => <TabBarIcon name="book" color={color} />,
+          tabBarIcon: ({ color }) => <TabIcon name="book-outline" color={color} />,
         }}
       />
 
-      {/* 3. PROFILE (Identity) */}
+      {/* ── 3. GUILDS (rightmost) ─────────────────────────────────────── */}
       <Tabs.Screen
-        name="profile"
+        name="guilds"
         options={{
-          title: 'Profile',
-          tabBarIcon: ({ color }) => <TabBarIcon name="user" color={color} />,
+          title: 'Guilds',
+          tabBarIcon: ({ color }) => <TabIcon name="shield-outline" color={color} />,
         }}
       />
     </Tabs>
