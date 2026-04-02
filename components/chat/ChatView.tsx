@@ -28,7 +28,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  KeyboardAvoidingView,
+  Keyboard,
   Platform,
   Pressable,
   StyleSheet,
@@ -82,6 +82,14 @@ export default function ChatView({
 
   const flatListRef = useRef<FlatList>(null);
 
+  // On iOS, track the exact keyboard height and apply it as paddingBottom on
+  // the container. This is more reliable than KeyboardAvoidingView because it
+  // doesn't depend on knowing the height of all the UI above this component
+  // (navigation bar + any in-screen bars vary by caller and device).
+  // Android uses softwareKeyboardLayoutMode="resize" in app.json so the
+  // system already handles layout — no listener needed there.
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
   // -------------------------------------------------------------------------
   // Auth
   // -------------------------------------------------------------------------
@@ -89,6 +97,20 @@ export default function ChatView({
     supabase.auth.getUser().then(({ data }) => {
       setCurrentUserId(data.user?.id ?? null);
     });
+  }, []);
+
+  // -------------------------------------------------------------------------
+  // Keyboard height tracking (iOS only)
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    const show = Keyboard.addListener('keyboardWillShow', (e) => {
+      setKeyboardHeight(e.endCoordinates.height);
+      // Scroll to the latest messages as the keyboard slides up
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 50);
+    });
+    const hide = Keyboard.addListener('keyboardWillHide', () => setKeyboardHeight(0));
+    return () => { show.remove(); hide.remove(); };
   }, []);
 
   // -------------------------------------------------------------------------
@@ -319,13 +341,7 @@ export default function ChatView({
   // MAIN RENDER
   // -------------------------------------------------------------------------
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
-      // Android: when the keyboard is hidden, the bottom inset pushes the
-      // input bar above the system navigation bar (triangle/circle/square).
-    >
+    <View style={[styles.outer, Platform.OS === 'ios' && { paddingBottom: keyboardHeight }]}>
       <FlatList
         ref={flatListRef}
         data={messages}
@@ -342,13 +358,17 @@ export default function ChatView({
         }
       />
 
-      {/* Input bar — paddingBottom accounts for Android nav bar + iOS home indicator */}
+      {/* Input bar
+            - keyboardHeight > 0: the outer paddingBottom already clears the keyboard,
+              so only use a small fixed gap at the bottom.
+            - keyboardHeight === 0: use the safe-area inset so the bar clears the
+              home indicator / Android nav bar. */}
       <View style={[
         styles.inputBar,
         {
           backgroundColor: theme.cardBackground,
           borderTopColor: '#eee',
-          paddingBottom: Math.max(insets.bottom, 10),
+          paddingBottom: keyboardHeight > 0 ? 8 : Math.max(insets.bottom, 10),
         },
       ]}>
         <TextInput
@@ -378,7 +398,7 @@ export default function ChatView({
           )}
         </Pressable>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -387,6 +407,8 @@ export default function ChatView({
 // ---------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
+  outer: { flex: 1 },
+
   centred: {
     flex: 1,
     alignItems: 'center',
