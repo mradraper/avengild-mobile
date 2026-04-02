@@ -46,7 +46,32 @@ export function SequentialView({
   const scrollRef = useRef<ScrollView>(null);
   const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Tracks the index the ScrollView is physically showing.
+  // Initialised to -1 so the first effect run (on mount) always triggers a scroll,
+  // even when currentIndex is 0 — handles restored positions.
+  const physicalIndexRef = useRef(-1);
+
+  // Sync the ScrollView to currentIndex whenever it changes from outside
+  // (BirdsEye step tap, phase change, or position restore on guide open).
+  // When the user swipes, handleMomentumScrollEnd updates physicalIndexRef first,
+  // so the effect sees no difference and skips the redundant scroll.
+  useEffect(() => {
+    if (physicalIndexRef.current === currentIndex) return;
+
+    const isFirstMount = physicalIndexRef.current === -1;
+    physicalIndexRef.current = currentIndex;
+
+    // Delay the initial scroll slightly so the ScrollView has finished layout.
+    // Subsequent external jumps (BirdsEye) animate immediately.
+    const delay = isFirstMount ? 80 : 0;
+    const timer = setTimeout(() => {
+      scrollRef.current?.scrollTo({ x: currentIndex * SCREEN_WIDTH, animated: !isFirstMount });
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [currentIndex]);
+
   const scrollTo = (index: number) => {
+    physicalIndexRef.current = index;
     scrollRef.current?.scrollTo({ x: index * SCREEN_WIDTH, animated: true });
     onIndexChange(index);
   };
@@ -61,6 +86,9 @@ export function SequentialView({
 
   const handleMomentumScrollEnd = (e: any) => {
     const newIndex = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
+    // Update the physical ref BEFORE calling onIndexChange so the useEffect
+    // above sees no change and doesn't issue a redundant scrollTo.
+    physicalIndexRef.current = newIndex;
     onIndexChange(newIndex);
   };
 
