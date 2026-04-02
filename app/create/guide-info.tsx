@@ -20,11 +20,14 @@ import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { useGuideCreation } from '@/lib/GuideCreationContext';
 import type { Enums } from '@/lib/database.types';
+import { pickAndUploadHeroImage } from '@/lib/mediaUpload';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -103,6 +106,7 @@ export default function GuideInfoScreen() {
   const isEditMode = !!editGuideId;
 
   const { guide, setGuide, loadExistingGuide, resetDraft } = useGuideCreation();
+  const [uploadingHero, setUploadingHero] = useState(false);
 
   // Load the existing guide data when entering edit mode
   useEffect(() => {
@@ -115,6 +119,18 @@ export default function GuideInfoScreen() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editGuideId]);
+
+  async function handlePickHeroImage() {
+    setUploadingHero(true);
+    try {
+      const url = await pickAndUploadHeroImage();
+      if (url) setGuide({ hero_media_url: url });
+    } catch (err: any) {
+      Alert.alert('Upload failed', err.message ?? 'Could not upload image. Please try again.');
+    } finally {
+      setUploadingHero(false);
+    }
+  }
 
   function handleContinue() {
     if (!guide.title.trim()) {
@@ -155,6 +171,48 @@ export default function GuideInfoScreen() {
           ))}
         </View>
         <Text style={[styles.stepLabel, { color: subText }]}>STEP 1 OF 4  ·  Guide Identity</Text>
+
+        {/* Hero image */}
+        <Text style={[styles.fieldLabel, { color: theme.text }]}>Hero Image</Text>
+        <Text style={[styles.fieldHint, { color: subText }]}>
+          The banner image shown at the top of your Guide.
+        </Text>
+        <TouchableOpacity
+          onPress={handlePickHeroImage}
+          disabled={uploadingHero}
+          activeOpacity={0.8}
+          style={[
+            styles.heroPickerBtn,
+            { borderColor: isDark ? '#1e2330' : '#ddd', backgroundColor: isDark ? '#121620' : '#f5f5f5' },
+            guide.hero_media_url && { borderStyle: 'solid', padding: 0, overflow: 'hidden' },
+          ]}
+        >
+          {uploadingHero ? (
+            <ActivityIndicator size="small" color={theme.tint} />
+          ) : guide.hero_media_url ? (
+            <>
+              <Image source={{ uri: guide.hero_media_url }} style={styles.heroImage} resizeMode="cover" />
+              <View style={styles.heroOverlay}>
+                <Ionicons name="camera-outline" size={20} color="#fff" />
+                <Text style={styles.heroOverlayText}>Change photo</Text>
+              </View>
+            </>
+          ) : (
+            <>
+              <Ionicons name="image-outline" size={32} color={subText} />
+              <Text style={[styles.heroPickerHint, { color: subText }]}>Tap to add a hero image</Text>
+            </>
+          )}
+        </TouchableOpacity>
+        {guide.hero_media_url && (
+          <TouchableOpacity
+            onPress={() => setGuide({ hero_media_url: null })}
+            style={styles.heroRemoveBtn}
+          >
+            <Ionicons name="trash-outline" size={14} color="#BC2F38" />
+            <Text style={styles.heroRemoveBtnText}>Remove image</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Title */}
         <Text style={[styles.fieldLabel, { color: theme.text }]}>Title <Text style={{ color: '#BC2F38' }}>*</Text></Text>
@@ -355,6 +413,44 @@ const styles = StyleSheet.create({
   toggleInfo: { flex: 1, flexDirection: 'row', alignItems: 'center', marginRight: 12 },
   toggleLabel: { fontSize: 14, fontWeight: '700' },
   toggleHint:  { fontSize: 12, marginTop: 2 },
+
+  // Hero image picker
+  heroPickerBtn: {
+    height: 140,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  heroImage: {
+    width: '100%',
+    height: '100%',
+  },
+  heroOverlay: {
+    position: 'absolute',
+    bottom: 10,
+    right: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  heroOverlayText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  heroPickerHint:  { fontSize: 13, fontWeight: '600' },
+  heroRemoveBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+    alignSelf: 'flex-start',
+  },
+  heroRemoveBtnText: { fontSize: 13, color: '#BC2F38', fontWeight: '600' },
 
   footer: {
     paddingHorizontal: 20,

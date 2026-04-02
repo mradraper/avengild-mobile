@@ -59,6 +59,8 @@ export type DraftStep = {
   latitude:           string;
   /** Longitude string for GPS coordinate input (converted to GeoJSON on save). */
   longitude:          string;
+  /** Local URI or uploaded public URL for the step photo. Stored as media_payload on publish. */
+  photo_url:          string | null;
 };
 
 export type DraftPhase = {
@@ -326,6 +328,8 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
           // Convert GeoJSON back to string inputs for the form
           latitude:  s.location_anchor ? String((s.location_anchor as any).coordinates?.[1] ?? '') : '',
           longitude: s.location_anchor ? String((s.location_anchor as any).coordinates?.[0] ?? '') : '',
+          // Extract the first photo URL from media_payload (if any)
+          photo_url: (s.media_payload as any)?.[0]?.url ?? null,
         })),
       };
     });
@@ -367,6 +371,8 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
           timer_seconds:      s.timer_seconds,
           is_optional:        s.is_optional,
           step_index:         sIdx,
+          // Convert photo_url to the media_payload JSONB format
+          media_payload:      s.photo_url ? [{ type: 'photo', url: s.photo_url, caption: null }] : null,
         };
       });
     }

@@ -29,6 +29,7 @@ import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   ScrollView,
   StyleSheet,
   Text,
@@ -166,13 +167,21 @@ export default function PreviewScreen() {
 
         {/* Guide identity block */}
         <View style={[styles.guideCard, { backgroundColor: theme.cardBackground }]}>
-          {/* Hero placeholder */}
-          <View style={styles.heroPlaceholder}>
-            <Ionicons name="image-outline" size={36} color={subText} />
-            <Text style={[styles.heroPlaceholderText, { color: subText }]}>
-              Hero image upload coming soon
-            </Text>
-          </View>
+          {/* Hero image — shows uploaded image or a placeholder */}
+          {guide.hero_media_url ? (
+            <Image
+              source={{ uri: guide.hero_media_url }}
+              style={styles.heroImage}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={styles.heroPlaceholder}>
+              <Ionicons name="image-outline" size={36} color={subText} />
+              <Text style={[styles.heroPlaceholderText, { color: subText }]}>
+                No hero image — add one in Guide Info
+              </Text>
+            </View>
+          )}
 
           <View style={styles.guideMeta}>
             <Text style={[styles.guideTitle, { color: theme.text }]}>{guide.title}</Text>
@@ -304,6 +313,7 @@ const styles = StyleSheet.create({
 
   // Guide identity card
   guideCard:  { borderRadius: 14, overflow: 'hidden', marginBottom: 16 },
+  heroImage: { height: 160, width: '100%' },
   heroPlaceholder: {
     height: 120,
     backgroundColor: '#1e2330',

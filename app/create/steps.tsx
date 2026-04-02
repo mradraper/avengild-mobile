@@ -34,12 +34,15 @@ import Colors from '@/constants/Colors';
 import type { DraftStep } from '@/lib/GuideCreationContext';
 import { useGuideCreation } from '@/lib/GuideCreationContext';
 import type { ChecklistItem, Enums } from '@/lib/database.types';
+import { pickAndUploadStepImage } from '@/lib/mediaUpload';
 import { supabase } from '@/lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -70,6 +73,7 @@ const EMPTY_FORM: StepForm = {
   is_optional:        false,
   latitude:           '',
   longitude:          '',
+  photo_url:          null,
 };
 
 // ---------------------------------------------------------------------------
@@ -91,6 +95,7 @@ export default function StepsScreen() {
   const [form,                 setForm]                 = useState<StepForm>(EMPTY_FORM);
   const [editingId,            setEditingId]            = useState<string | null>(null);
   const [showAdvanced,         setShowAdvanced]         = useState(false);
+  const [uploadingPhoto,       setUploadingPhoto]       = useState(false);
   const [guideSearch,          setGuideSearch]          = useState('');
   const [guideResults,         setGuideResults]         = useState<{ id: string; title: string }[]>([]);
   const [newChecklistItem,     setNewChecklistItem]     = useState('');
@@ -136,6 +141,7 @@ export default function StepsScreen() {
     setChecklistItemRequired(true);
     setShowForm(false);
     setShowAdvanced(false);
+    setUploadingPhoto(false);
   }
 
   function startEdit(stepLocalId: string) {
@@ -155,6 +161,7 @@ export default function StepsScreen() {
       is_optional:        step.is_optional,
       latitude:           step.latitude,
       longitude:          step.longitude,
+      photo_url:          step.photo_url,
     });
     setEditingId(stepLocalId);
     setShowForm(true);
@@ -182,6 +189,22 @@ export default function StepsScreen() {
       ],
     }));
     setNewChecklistItem('');
+  }
+
+  // -------------------------------------------------------------------------
+  // Photo upload
+  // -------------------------------------------------------------------------
+
+  async function handlePickStepPhoto() {
+    setUploadingPhoto(true);
+    try {
+      const url = await pickAndUploadStepImage();
+      if (url) setForm(prev => ({ ...prev, photo_url: url }));
+    } catch (err: any) {
+      Alert.alert('Upload failed', err.message ?? 'Could not upload photo. Please try again.');
+    } finally {
+      setUploadingPhoto(false);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -374,6 +397,36 @@ export default function StepsScreen() {
               autoFocus
               maxLength={200}
             />
+
+            {/* Step photo */}
+            <Text style={[styles.fieldLabel, { color: subText }]}>Photo (optional)</Text>
+            {form.photo_url ? (
+              <View>
+                <Image source={{ uri: form.photo_url }} style={styles.photoPreview} resizeMode="cover" />
+                <TouchableOpacity
+                  style={[styles.photoRemoveBtn, { borderColor: isDark ? '#1e2330' : '#ddd' }]}
+                  onPress={() => setForm(prev => ({ ...prev, photo_url: null }))}
+                >
+                  <Ionicons name="trash-outline" size={14} color="#BC2F38" />
+                  <Text style={[styles.photoRemoveBtnText, { color: '#BC2F38' }]}>Remove photo</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={[styles.photoPickBtn, { borderColor: isDark ? '#1e2330' : '#ddd', backgroundColor: isDark ? '#080A12' : '#f9f9f9' }]}
+                onPress={handlePickStepPhoto}
+                disabled={uploadingPhoto}
+              >
+                {uploadingPhoto ? (
+                  <ActivityIndicator size="small" color={theme.tint} />
+                ) : (
+                  <>
+                    <Ionicons name="image-outline" size={20} color={subText} />
+                    <Text style={[styles.photoPickBtnText, { color: subText }]}>Add a photo</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
 
             {/* Checklist items — shown only when step_type = 'checklist' */}
             {form.step_type === 'checklist' && (
@@ -632,6 +685,7 @@ export default function StepsScreen() {
                   setNewChecklistItem('');
                   setChecklistItemRequired(true);
                   setShowAdvanced(false);
+                  setUploadingPhoto(false);
                 }}
               >
                 <Text style={[styles.cancelBtnText, { color: subText }]}>Cancel</Text>
@@ -774,6 +828,37 @@ const styles = StyleSheet.create({
   cancelBtnText: { fontSize: 15, fontWeight: '600' },
   saveBtn:      { flex: 2, paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   saveBtnText:  { color: '#fff', fontSize: 15, fontWeight: '800' },
+
+  // Photo upload
+  photoPickBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderRadius: 8,
+    paddingVertical: 14,
+    gap: 8,
+    marginTop: 4,
+  },
+  photoPickBtnText: { fontSize: 14, fontWeight: '600' },
+  photoPreview: {
+    width: '100%',
+    height: 160,
+    borderRadius: 8,
+    marginTop: 4,
+  },
+  photoRemoveBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 8,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderRadius: 8,
+  },
+  photoRemoveBtnText: { fontSize: 13, fontWeight: '600' },
 
   addBtn: {
     flexDirection: 'row',

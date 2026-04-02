@@ -32,7 +32,13 @@
     },
     "plugins": [
       "expo-router",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Avengild accesses your photos to let you add images to guides and steps."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

@@ -13,14 +13,17 @@
  */
 
 import ChatView from '@/components/chat/ChatView';
+import { FreeformView } from '@/components/guide/FreeformView';
+import { PhaseNavigator } from '@/components/guide/PhaseNavigator';
+import { SequentialView } from '@/components/guide/SequentialView';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
-import { supabase } from '@/lib/supabase';
-import { Enums } from '@/lib/database.types';
+import { Enums, StepCard as StepCardType } from '@/lib/database.types';
 import { storePendingDeepLink } from '@/lib/pendingDeepLink';
+import { supabase } from '@/lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -63,16 +66,17 @@ type Participant = {
   profile: { full_name: string | null; username: string | null; avatar_url: string | null } | null;
 };
 
-type StepRow = {
-  id: string;
-  atomic_action_text: string;
-  step_index: number;
-  curation_notes: string | null;
-  intent_tag: Enums['intent_tag'];
-  phase_title: string;
-  is_removed: boolean;
-  is_addition: boolean;
-  completed: boolean;
+/**
+ * Event phase — mirrors PhaseWithSteps but is self-contained so we don't
+ * need to import the full DB type. `is_custom` marks the synthetic
+ * "Added Steps" phase that holds organiser additions.
+ */
+type EventPhaseData = {
+  id:             string;
+  title:          string;
+  execution_mode: Enums['execution_mode'];
+  step_cards:     StepCardType[];
+  is_custom:      boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -87,13 +91,20 @@ export default function EventDetailScreen() {
 
   const [event, setEvent] = useState<EventData | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
-  const [steps, setSteps] = useState<StepRow[]>([]);
+  const [eventPhases, setEventPhases] = useState<EventPhaseData[]>([]);
   const [completedStepIds, setCompletedStepIds] = useState<Set<string>>(new Set());
   const [chatThreadId, setChatThreadId] = useState<string | undefined>(undefined);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'plan' | 'crew' | 'chat'>('overview');
+
+  // Phase-based sequential navigation for the Plan tab
+  const [activePhaseIndex,    setActivePhaseIndex]    = useState(0);
+  const [sequentialStepIndex, setSequentialStepIndex] = useState(0);
+
+  // Gate: prevents position-save effect from firing before the initial load restores position
+  const positionLoadedRef = useRef(false);
 
   // Reschedule modal state
   const [showDateModal,   setShowDateModal]   = useState(false);
@@ -133,7 +144,7 @@ export default function EventDetailScreen() {
     await Promise.all([
       fetchEvent(eventId),
       fetchParticipants(eventId),
-      fetchSteps(eventId),
+      fetchEventPhases(eventId),
       fetchChatThread(eventId),
     ]);
     setLoading(false);
@@ -165,7 +176,7 @@ export default function EventDetailScreen() {
     if (data) setParticipants(data as Participant[]);
   }
 
-  async function fetchSteps(eventId: string) {
+  async function fetchEventPhases(eventId: string) {
     // Fetch the event to get guide_id and removed_step_ids
     const { data: ev } = await supabase
       .from('events')
@@ -176,63 +187,77 @@ export default function EventDetailScreen() {
     if (!ev) return;
 
     const removedIds = new Set<string>(ev.removed_step_ids ?? []);
-    const rows: StepRow[] = [];
+    const phases: EventPhaseData[] = [];
 
-    // A. Source Guide steps
+    // A. Source Guide phases with full step_cards data
     if (ev.guide_id) {
-      const { data: phases } = await supabase
+      const { data: guidePhases } = await supabase
         .from('phases')
         .select(`
-          id, title, phase_index,
-          step_cards(id, atomic_action_text, step_index, curation_notes, intent_tag)
+          id, title, phase_index, execution_mode,
+          step_cards(*)
         `)
         .eq('guide_id', ev.guide_id)
         .order('phase_index', { ascending: true });
 
-      if (phases) {
-        for (const phase of phases as any[]) {
-          const phaseSteps = (phase.step_cards ?? []) as any[];
-          phaseSteps
+      if (guidePhases) {
+        for (const phase of guidePhases as any[]) {
+          const sorted = ((phase.step_cards ?? []) as any[])
             .sort((a: any, b: any) => a.step_index - b.step_index)
-            .forEach((s: any) => {
-              rows.push({
-                id: s.id,
-                atomic_action_text: s.atomic_action_text,
-                step_index: s.step_index,
-                curation_notes: s.curation_notes,
-                intent_tag: s.intent_tag,
-                phase_title: phase.title,
-                is_removed: removedIds.has(s.id),
-                is_addition: false,
-                completed: false,
-              });
-            });
+            .filter((s: any) => !removedIds.has(s.id)) as StepCardType[];
+
+          phases.push({
+            id:             phase.id,
+            title:          phase.title,
+            execution_mode: phase.execution_mode,
+            step_cards:     sorted,
+            is_custom:      false,
+          });
         }
       }
     }
 
-    // B. Event-specific additions
+    // B. Event-specific additions → synthetic "Added Steps" phase (Freeform, read-only)
     const { data: additions } = await supabase
       .from('event_step_additions')
       .select('id, atomic_action_text, step_index, curation_notes, intent_tag')
       .eq('event_id', eventId)
       .order('step_index', { ascending: true });
 
-    if (additions) {
-      for (const a of additions as any[]) {
-        rows.push({
-          id: a.id,
-          atomic_action_text: a.atomic_action_text,
-          step_index: a.step_index,
-          curation_notes: a.curation_notes,
-          intent_tag: a.intent_tag,
-          phase_title: 'Added Steps',
-          is_removed: false,
-          is_addition: true,
-          completed: false,
-        });
-      }
+    if (additions && additions.length > 0) {
+      const additionCards: StepCardType[] = (additions as any[]).map((a: any, idx: number) => ({
+        id:                 a.id,
+        phase_id:           'custom',
+        creator_id:         '',
+        atomic_action_text: a.atomic_action_text,
+        step_index:         idx,
+        media_payload:      null,
+        curation_notes:     a.curation_notes ?? null,
+        beginner_mistakes:  null,
+        intent_tag:         a.intent_tag,
+        is_sensitive:       false,
+        location_anchor:    null,
+        location_name:      null,
+        linked_guide_id:    null,
+        completion_weight:  1,
+        step_type:          'action' as const,
+        checklist_items:    null,
+        timer_seconds:      null,
+        // Mark as optional so they don't count toward required completion
+        is_optional:        true,
+        created_at:         '',
+      }));
+
+      phases.push({
+        id:             'custom',
+        title:          'Added Steps',
+        execution_mode: 'Freeform',
+        step_cards:     additionCards,
+        is_custom:      true,
+      });
     }
+
+    setEventPhases(phases);
 
     // C. My completion states
     const { data: states } = await supabase
@@ -241,12 +266,29 @@ export default function EventDetailScreen() {
       .eq('event_id', eventId);
 
     if (states) {
-      const done = new Set(states.map((s: any) => s.step_card_id));
-      setCompletedStepIds(done);
-      rows.forEach((r) => { r.completed = done.has(r.id); });
+      setCompletedStepIds(new Set(states.map((s: any) => s.step_card_id)));
     }
 
-    setSteps(rows);
+    // D. Restore saved position from event_participants.last_position
+    try {
+      const { data: participant } = await supabase
+        .from('event_participants')
+        .select('last_position')
+        .eq('event_id', eventId)
+        .eq('user_id', (await supabase.auth.getUser()).data.user?.id ?? '')
+        .maybeSingle();
+
+      if (participant?.last_position) {
+        const pos = participant.last_position as { phase: number; step: number };
+        setActivePhaseIndex(pos.phase ?? 0);
+        setSequentialStepIndex(pos.step ?? 0);
+      }
+    } catch {
+      // Participant row may not exist yet (e.g., invited but not joined) — silently ignore
+    }
+
+    // Allow position-save effect to fire from this point on
+    positionLoadedRef.current = true;
   }
 
   async function fetchChatThread(eventId: string) {
@@ -327,38 +369,52 @@ export default function EventDetailScreen() {
   }
 
   // -------------------------------------------------------------------------
+  // PERSIST PLAN POSITION to event_participants.last_position
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (!positionLoadedRef.current || !id || typeof id !== 'string' || !currentUserId) return;
+    supabase
+      .from('event_participants')
+      .update({ last_position: { phase: activePhaseIndex, step: sequentialStepIndex } })
+      .eq('event_id', id)
+      .eq('user_id', currentUserId)
+      .then();
+  }, [activePhaseIndex, sequentialStepIndex]);
+
+  // -------------------------------------------------------------------------
   // STEP COMPLETION TOGGLE
   // -------------------------------------------------------------------------
-  async function toggleStep(step: StepRow) {
+  function handleEventStepToggle(stepId: string) {
     if (!currentUserId || !id || typeof id !== 'string') return;
-    if (step.is_removed || step.is_addition) return; // Only toggle source steps
+    // Additions are in the 'custom' phase and are informational only —
+    // their IDs don't exist in step_cards so they can't be written to event_step_states.
+    const isAddition = eventPhases.find(p => p.is_custom)?.step_cards.some(s => s.id === stepId);
+    if (isAddition) return;
 
-    if (step.completed) {
-      await supabase
+    const wasCompleted = completedStepIds.has(stepId);
+
+    setCompletedStepIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(stepId)) next.delete(stepId);
+      else next.add(stepId);
+      return next;
+    });
+
+    if (wasCompleted) {
+      supabase
         .from('event_step_states')
         .delete()
         .eq('event_id', id)
-        .eq('step_card_id', step.id)
-        .eq('user_id', currentUserId);
-
-      setCompletedStepIds((prev) => {
-        const next = new Set(prev);
-        next.delete(step.id);
-        return next;
-      });
+        .eq('step_card_id', stepId)
+        .eq('user_id', currentUserId)
+        .then();
     } else {
-      await supabase.from('event_step_states').insert({
-        event_id: id as string,
-        step_card_id: step.id,
+      supabase.from('event_step_states').insert({
+        event_id: id,
+        step_card_id: stepId,
         user_id: currentUserId,
-      });
-
-      setCompletedStepIds((prev) => new Set(prev).add(step.id));
+      }).then();
     }
-
-    setSteps((prev) =>
-      prev.map((s) => s.id === step.id ? { ...s, completed: !s.completed } : s)
-    );
   }
 
   // -------------------------------------------------------------------------
@@ -442,8 +498,10 @@ export default function EventDetailScreen() {
     : '';
 
   const confirmedCount = participants.filter((p) => p.status === 'confirmed').length;
-  const completedCount = steps.filter((s) => s.completed && !s.is_removed).length;
-  const totalCount = steps.filter((s) => !s.is_removed).length;
+  // Only count required (non-optional) source steps (exclude custom additions phase)
+  const allSourceSteps = eventPhases.filter(p => !p.is_custom).flatMap(p => p.step_cards).filter(s => !s.is_optional);
+  const completedCount = allSourceSteps.filter(s => completedStepIds.has(s.id)).length;
+  const totalCount     = allSourceSteps.length;
 
   // -------------------------------------------------------------------------
   // RENDER
@@ -576,90 +634,53 @@ export default function EventDetailScreen() {
 
         {/* ---- PLAN ---- */}
         {activeTab === 'plan' && (
-          <FlatList
-            data={steps}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={{ padding: 16 }}
-            ListEmptyComponent={
-              <View style={styles.empty}>
-                <Ionicons name="list-outline" size={48} color="#ccc" />
-                <Text style={{ color: '#999', marginTop: 12 }}>No steps for this event.</Text>
-              </View>
-            }
-            renderItem={({ item, index }) => {
-              // Phase header: show when phase changes from previous step
-              const prevPhase = index > 0 ? steps[index - 1].phase_title : null;
-              const showPhaseHeader = item.phase_title !== prevPhase;
+          eventPhases.length === 0 ? (
+            <View style={styles.empty}>
+              <Ionicons name="list-outline" size={48} color="#ccc" />
+              <Text style={{ color: '#999', marginTop: 12 }}>No steps for this event.</Text>
+            </View>
+          ) : (
+            <>
+              {/* Phase tab bar — shown only when there are multiple phases */}
+              {eventPhases.length > 1 && (
+                <PhaseNavigator
+                  phases={eventPhases}
+                  activePhaseIndex={activePhaseIndex}
+                  completedSteps={completedStepIds}
+                  onPhaseSelect={(idx) => { setActivePhaseIndex(idx); setSequentialStepIndex(0); }}
+                />
+              )}
 
-              return (
-                <View>
-                  {showPhaseHeader && (
-                    <Text style={[styles.phaseHeader, { color: theme.tint }]}>
-                      {item.phase_title}
-                    </Text>
-                  )}
-                  <Pressable
-                    style={[
-                      styles.stepCard,
-                      {
-                        backgroundColor: item.is_removed
-                          ? '#f5f5f5'
-                          : theme.cardBackground,
-                        borderLeftColor: item.is_addition
-                          ? '#375E3F'
-                          : item.intent_tag === 'Safety'
-                          ? '#E53E3E'
-                          : item.intent_tag === 'Milestone'
-                          ? theme.tint
-                          : 'transparent',
-                        borderLeftWidth: item.is_addition || item.intent_tag !== 'General' ? 4 : 0,
-                        opacity: item.is_removed ? 0.4 : 1,
-                      },
-                    ]}
-                    onPress={() => toggleStep(item)}
-                    disabled={item.is_removed || item.is_addition}
-                  >
-                    <View style={styles.stepContent}>
-                      {!item.is_removed && !item.is_addition && (
-                        <View style={[
-                          styles.stepCheckbox,
-                          item.completed && { backgroundColor: theme.tint, borderColor: theme.tint },
-                        ]}>
-                          {item.completed && (
-                            <Ionicons name="checkmark" size={12} color="#fff" />
-                          )}
-                        </View>
-                      )}
-                      {item.is_removed && (
-                        <Ionicons name="close-circle-outline" size={18} color="#ccc" style={{ marginRight: 10 }} />
-                      )}
-                      {item.is_addition && (
-                        <Ionicons name="add-circle-outline" size={18} color="#375E3F" style={{ marginRight: 10 }} />
-                      )}
-                      <View style={{ flex: 1 }}>
-                        <Text style={[
-                          styles.stepAction,
-                          { color: item.is_removed ? '#aaa' : theme.text },
-                          item.completed && { textDecorationLine: 'line-through', color: '#aaa' },
-                        ]}>
-                          {item.atomic_action_text}
-                        </Text>
-                        {item.curation_notes && !item.is_removed && (
-                          <Text style={styles.stepNotes}>{item.curation_notes}</Text>
-                        )}
-                        {item.is_removed && (
-                          <Text style={{ color: '#ccc', fontSize: 11, marginTop: 2 }}>Removed</Text>
-                        )}
-                        {item.is_addition && (
-                          <Text style={{ color: '#375E3F', fontSize: 11, marginTop: 2 }}>Added step</Text>
-                        )}
-                      </View>
-                    </View>
-                  </Pressable>
-                </View>
-              );
-            }}
-          />
+              {/* Step execution — per-phase SequentialView or FreeformView */}
+              {(() => {
+                const activePhase = eventPhases[activePhaseIndex];
+                if (!activePhase) return null;
+                const isSequential = activePhase.execution_mode === 'Sequential';
+                const isCustom     = activePhase.is_custom;
+
+                if (isSequential) {
+                  return (
+                    <SequentialView
+                      steps={activePhase.step_cards}
+                      completedSteps={completedStepIds}
+                      onStepToggle={handleEventStepToggle}
+                      currentIndex={sequentialStepIndex}
+                      onIndexChange={setSequentialStepIndex}
+                      // No auto-advance in event execution — crew advances at their own pace
+                    />
+                  );
+                }
+                return (
+                  <FreeformView
+                    steps={activePhase.step_cards}
+                    completedSteps={completedStepIds}
+                    // Additions phase is read-only — no-op prevents FK constraint violations
+                    onStepToggle={isCustom ? () => {} : handleEventStepToggle}
+                  />
+                );
+              })()}
+            </>
+          )
         )}
 
         {/* ---- CREW ---- */}
@@ -956,49 +977,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     marginTop: 2,
-  },
-
-  phaseHeader: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginTop: 16,
-    marginBottom: 6,
-    marginLeft: 4,
-  },
-  stepCard: {
-    borderRadius: 10,
-    marginBottom: 8,
-    overflow: 'hidden',
-  },
-  stepContent: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    padding: 14,
-    gap: 10,
-  },
-  stepCheckbox: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 2,
-    borderColor: '#ccc',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-    flexShrink: 0,
-  },
-  stepAction: {
-    fontSize: 15,
-    fontWeight: '600',
-    lineHeight: 21,
-  },
-  stepNotes: {
-    fontSize: 13,
-    color: '#888',
-    marginTop: 4,
-    lineHeight: 18,
   },
 
   memberRow: {

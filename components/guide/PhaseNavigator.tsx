@@ -2,10 +2,16 @@ import React from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
-import type { PhaseWithSteps } from '@/lib/database.types';
+
+/** Minimal phase shape required by PhaseNavigator — compatible with PhaseWithSteps and EventPhaseData. */
+type PhaseItem = {
+  id:          string;
+  title:       string;
+  step_cards?: { id: string }[];
+};
 
 type Props = {
-  phases: PhaseWithSteps[];
+  phases: PhaseItem[];
   activePhaseIndex: number;
   completedSteps: Set<string>;
   onPhaseSelect: (index: number) => void;
