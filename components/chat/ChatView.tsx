@@ -8,9 +8,16 @@
  *   - Pass `guildId` OR `eventId` (not both) to enable lazy thread creation
  *     on the first message send — no thread row is created until someone
  *     actually types a message.
+ *   - Pass `dmUserId` (the other participant's UUID) to enable a DM thread.
+ *     The `get_or_create_dm_thread` SECURITY DEFINER RPC is used so there is
+ *     always at most one thread between any two users, regardless of who
+ *     initiates.
  *   - Supabase Realtime (`postgres_changes`) delivers new messages live.
  *   - The component owns its own subscription lifecycle (subscribe on mount,
  *     unsubscribe on unmount).
+ *   - After each sent message the component fires-and-forgets an update to
+ *     `chat_threads.last_message_at` and `last_message_preview` so the inbox
+ *     can sort by recency.
  *
  * Limitations (v1 — text only):
  *   - No image or file attachments.
@@ -28,14 +35,13 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  Keyboard,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import Animated, { useAnimatedKeyboard, useAnimatedStyle } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +59,8 @@ type ChatViewProps = {
   guildId?: string;
   /** Provide to enable lazy thread creation for an event context. */
   eventId?: string;
+  /** Provide the other participant's UUID to open or create a DM thread. */
+  dmUserId?: string;
   /** Called when a thread is lazily created, so the parent can cache the ID. */
   onThreadCreated?: (threadId: string) => void;
 };
@@ -65,6 +73,7 @@ export default function ChatView({
   threadId: initialThreadId,
   guildId,
   eventId,
+  dmUserId,
   onThreadCreated,
 }: ChatViewProps) {
   const colorScheme = useColorScheme();
@@ -76,41 +85,42 @@ export default function ChatView({
   const [messages, setMessages] = useState<MessageWithSender[]>([]);
   const [threadId, setThreadId] = useState<string | undefined>(initialThreadId);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [currentUserProfile, setCurrentUserProfile] = useState<{ full_name: string | null; username: string | null } | null>(null);
   const [loading, setLoading] = useState(true);
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
 
-  // On iOS, track the exact keyboard height and apply it as paddingBottom on
-  // the container. This is more reliable than KeyboardAvoidingView because it
-  // doesn't depend on knowing the height of all the UI above this component
-  // (navigation bar + any in-screen bars vary by caller and device).
-  // Android uses softwareKeyboardLayoutMode="resize" in app.json so the
-  // system already handles layout — no listener needed there.
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  // Tracks the keyboard height via Reanimated's native-driven hook, which works
+  // correctly with new architecture (Fabric) on both platforms.
+  // Note: edgeToEdgeEnabled:true in app.json disables Android's
+  // softwareKeyboardLayoutMode="resize", so we must handle avoidance here on
+  // all platforms rather than delegating to the system on Android.
+  const keyboard = useAnimatedKeyboard();
+  const keyboardAvoidStyle = useAnimatedStyle(() => ({
+    paddingBottom: keyboard.height.value,
+  }));
 
   // -------------------------------------------------------------------------
   // Auth
   // -------------------------------------------------------------------------
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      setCurrentUserId(data.user?.id ?? null);
+    supabase.auth.getUser().then(async ({ data }) => {
+      const uid = data.user?.id ?? null;
+      setCurrentUserId(uid);
+      if (uid) {
+        // Cache the sender's own profile so handleSend can attach it
+        // without an extra round-trip. chat_messages.sender_id → auth.users
+        // (not profiles), so all profile joins must be done as separate queries.
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('full_name, username')
+          .eq('id', uid)
+          .maybeSingle();
+        setCurrentUserProfile(profile ?? null);
+      }
     });
-  }, []);
-
-  // -------------------------------------------------------------------------
-  // Keyboard height tracking (iOS only)
-  // -------------------------------------------------------------------------
-  useEffect(() => {
-    if (Platform.OS !== 'ios') return;
-    const show = Keyboard.addListener('keyboardWillShow', (e) => {
-      setKeyboardHeight(e.endCoordinates.height);
-      // Scroll to the latest messages as the keyboard slides up
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 50);
-    });
-    const hide = Keyboard.addListener('keyboardWillHide', () => setKeyboardHeight(0));
-    return () => { show.remove(); hide.remove(); };
   }, []);
 
   // -------------------------------------------------------------------------
@@ -135,18 +145,30 @@ export default function ChatView({
 
     async function loadMessages() {
       setLoading(true);
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from('chat_messages')
-        .select(`
-          id, thread_id, sender_id, body, reply_to_id,
-          is_deleted, created_at, edited_at,
-          sender:profiles!chat_messages_sender_id_fkey(full_name, username)
-        `)
+        .select('id, thread_id, sender_id, body, reply_to_id, is_deleted, created_at, edited_at')
         .eq('thread_id', threadId)
         .order('created_at', { ascending: true });
 
       if (!cancelled) {
-        if (data) setMessages(data as MessageWithSender[]);
+        if (data && data.length > 0) {
+          // Two-step join: sender_id → auth.users (not profiles), so PostgREST
+          // cannot resolve profiles directly. Fetch profiles separately.
+          const senderIds = [...new Set(data.map((m: any) => m.sender_id).filter(Boolean))];
+          const { data: profiles } = await supabase
+            .from('profiles')
+            .select('id, full_name, username')
+            .in('id', senderIds);
+          const profileMap = new Map((profiles ?? []).map((p: any) => [p.id, p]));
+          const enriched = data.map((m: any) => ({
+            ...m,
+            sender: profileMap.get(m.sender_id) ?? null,
+          }));
+          if (!cancelled) setMessages(enriched as MessageWithSender[]);
+        } else {
+          setMessages([]);
+        }
         setLoading(false);
       }
     }
@@ -165,20 +187,30 @@ export default function ChatView({
           filter: `thread_id=eq.${threadId}`,
         },
         async (payload) => {
-          // Fetch the full row with sender joined, since payload.new is bare
-          const { data } = await supabase
+          // Fetch the bare row, then resolve the sender profile separately.
+          // (sender_id → auth.users, not profiles — no direct FK for PostgREST.)
+          const { data: msg } = await supabase
             .from('chat_messages')
-            .select(`
-              id, thread_id, sender_id, body, reply_to_id,
-              is_deleted, created_at, edited_at,
-              sender:profiles!chat_messages_sender_id_fkey(full_name, username)
-            `)
+            .select('id, thread_id, sender_id, body, reply_to_id, is_deleted, created_at, edited_at')
             .eq('id', payload.new.id)
             .single();
 
-          if (data) {
-            setMessages((prev) => [...prev, data as MessageWithSender]);
-            // Scroll to bottom on new message
+          if (msg) {
+            const { data: profile } = await supabase
+              .from('profiles')
+              .select('full_name, username')
+              .eq('id', (msg as any).sender_id)
+              .maybeSingle();
+
+            const enriched = { ...(msg as any), sender: profile ?? null } as MessageWithSender;
+
+            setMessages((prev) => {
+              // Deduplicate: our own sent message is already in state from
+              // the optimistic append in handleSend; skip if already present.
+              if (prev.some((m) => m.id === enriched.id)) return prev;
+              return [...prev, enriched];
+            });
+            // Scroll to bottom on new message from another member
             setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
           }
         }
@@ -206,30 +238,41 @@ export default function ChatView({
   async function ensureThread(): Promise<string | null> {
     if (threadId) return threadId;
 
-    if (!guildId && !eventId) return null;
+    if (!guildId && !eventId && !dmUserId) return null;
 
-    const insertPayload = guildId
-      ? { guild_id: guildId }
-      : { event_id: eventId };
+    let tid: string | null = null;
 
-    // Use upsert so concurrent first-senders don't race
-    const { data, error } = await supabase
-      .from('chat_threads')
-      .upsert(insertPayload, {
-        onConflict: guildId ? 'guild_id' : 'event_id',
-        ignoreDuplicates: false,
-      })
-      .select('id')
-      .single();
-
-    if (error || !data) {
-      console.error('[ChatView] thread creation error:', error?.message);
-      return null;
+    if (dmUserId) {
+      // DM threads use a dedicated SECURITY DEFINER RPC that handles both
+      // orderings (A↔B and B↔A) so there is always at most one thread
+      // between any two users.
+      const { data, error } = await supabase.rpc('get_or_create_dm_thread', {
+        p_other_user_id: dmUserId,
+      });
+      if (error || !data) {
+        console.error('[ChatView] DM thread creation error:', error?.message);
+        return null;
+      }
+      tid = data as string;
+    } else {
+      // Use a SECURITY DEFINER RPC rather than a direct INSERT so that the
+      // membership check runs in the function's own privilege context. A direct
+      // INSERT calls auth_is_guild_member() from inside an RLS WITH CHECK
+      // expression, where auth.uid() can return null and block the INSERT.
+      const { data, error } = await supabase.rpc('get_or_create_chat_thread', {
+        p_guild_id: guildId ?? null,
+        p_event_id: eventId ?? null,
+      });
+      if (error || !data) {
+        console.error('[ChatView] thread creation error:', error?.message);
+        return null;
+      }
+      tid = data as string;
     }
 
-    setThreadId(data.id);
-    onThreadCreated?.(data.id);
-    return data.id;
+    setThreadId(tid);
+    onThreadCreated?.(tid);
+    return tid;
   }
 
   // -------------------------------------------------------------------------
@@ -248,16 +291,36 @@ export default function ChatView({
       return;
     }
 
-    const { error } = await supabase.from('chat_messages').insert({
-      thread_id: tid,
-      sender_id: currentUserId,
-      body,
-    });
+    const { data: newMsg, error } = await supabase
+      .from('chat_messages')
+      .insert({
+        thread_id: tid,
+        sender_id: currentUserId,
+        body,
+      })
+      .select('id, thread_id, sender_id, body, reply_to_id, is_deleted, created_at, edited_at')
+      .single();
 
     if (error) {
       // Restore text so user doesn't lose their message
       setInputText(body);
       console.error('[ChatView] send error:', error.message);
+    } else if (newMsg) {
+      // Attach cached profile — no extra round-trip needed for the sender's own message
+      const enriched = { ...(newMsg as any), sender: currentUserProfile } as MessageWithSender;
+      // Append immediately — don't wait for the Realtime event
+      setMessages((prev) => [...prev, enriched]);
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+
+      // Fire-and-forget: keep inbox metadata current for sorting and preview
+      const preview = body.length > 80 ? body.slice(0, 77) + '…' : body;
+      supabase
+        .from('chat_threads')
+        .update({ last_message_at: newMsg.created_at, last_message_preview: preview })
+        .eq('id', tid)
+        .then(({ error: updateErr }) => {
+          if (updateErr) console.warn('[ChatView] inbox update error:', updateErr.message);
+        });
     }
 
     setSending(false);
@@ -341,12 +404,13 @@ export default function ChatView({
   // MAIN RENDER
   // -------------------------------------------------------------------------
   return (
-    <View style={[styles.outer, Platform.OS === 'ios' && { paddingBottom: keyboardHeight }]}>
+    <Animated.View style={[styles.outer, keyboardAvoidStyle]}>
       <FlatList
         ref={flatListRef}
         data={messages}
         keyExtractor={(item) => item.id}
         renderItem={renderMessage}
+        style={styles.messageScroller}
         contentContainerStyle={styles.messageList}
         ListEmptyComponent={
           <View style={styles.centred}>
@@ -358,17 +422,13 @@ export default function ChatView({
         }
       />
 
-      {/* Input bar
-            - keyboardHeight > 0: the outer paddingBottom already clears the keyboard,
-              so only use a small fixed gap at the bottom.
-            - keyboardHeight === 0: use the safe-area inset so the bar clears the
-              home indicator / Android nav bar. */}
+      {/* Input bar — safe-area inset clears home indicator / Android nav bar */}
       <View style={[
         styles.inputBar,
         {
           backgroundColor: theme.cardBackground,
           borderTopColor: '#eee',
-          paddingBottom: keyboardHeight > 0 ? 8 : Math.max(insets.bottom, 10),
+          paddingBottom: Math.max(insets.bottom, 10),
         },
       ]}>
         <TextInput
@@ -398,7 +458,7 @@ export default function ChatView({
           )}
         </Pressable>
       </View>
-    </View>
+    </Animated.View>
   );
 }
 
@@ -416,6 +476,7 @@ const styles = StyleSheet.create({
     padding: 40,
   },
 
+  messageScroller: { flex: 1 },
   messageList: {
     paddingHorizontal: 12,
     paddingTop: 12,

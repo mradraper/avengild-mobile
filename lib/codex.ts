@@ -36,9 +36,38 @@ export const Codex = {
   },
 
   /**
-   * 2. COMPLETE A STEP
+   * 2. SAVE TO INTENTIONS
+   * Upserts a codex_entry with status 'Intention'. Safe to call even if the
+   * entry already exists at a higher-priority status (Scheduled, Completed) —
+   * the onConflict: 'do nothing' path prevents regression.
+   */
+  async saveToIntentions(guideId: string) {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    // Check if an entry already exists — don't overwrite a Scheduled or Completed status.
+    const { data: existing } = await supabase
+      .from('codex_entries')
+      .select('id, status')
+      .eq('user_id', user.id)
+      .eq('guide_id', guideId)
+      .maybeSingle();
+
+    if (existing) return; // Already in Codex at any status — leave it as-is.
+
+    await supabase
+      .from('codex_entries')
+      .insert({ user_id: user.id, guide_id: guideId, status: 'Intention' });
+  },
+
+  /**
+   * 3. COMPLETE A STEP (solo guide execution)
    * Marks a specific step as 'completed' in the step_progress table.
    * Calls startGuide first to ensure the Codex entry exists.
+   *
+   * Note: Event-based step tracking writes to event_step_states instead
+   * (handled directly in app/event/[id].tsx). getCompletedStepIds() queries
+   * both tables so the Codex progress display is always accurate.
    */
   async completeStep(guideId: string, stepId: string) {
     const { data: { user } } = await supabase.auth.getUser();
@@ -60,7 +89,7 @@ export const Codex = {
   },
 
   /**
-   * 3. UNCOMPLETE A STEP
+   * 4. UNCOMPLETE A STEP
    * Removes the step_progress row for a given step, reverting it to incomplete.
    * Called when the user unticks a step they previously marked as done.
    *
@@ -104,48 +133,83 @@ export const Codex = {
   },
 
   /**
-   * 4. GET PROGRESS (single guide)
+   * 5. GET PROGRESS (single guide)
    * Returns a list of all Step IDs the user has finished for this guide.
-   * Used by the Guide detail screen to restore UI state on load.
+   * Queries both solo (step_progress) and event (event_step_states) sources
+   * so the Guide detail screen restores full state regardless of execution mode.
    */
   async getGuideProgress(guideId: string): Promise<string[]> {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return [];
 
-    const { data, error } = await supabase
-      .from('step_progress')
-      .select('step_id')
-      .eq('user_id', user.id)
-      .eq('guide_id', guideId);
+    const [soloResult, eventResult] = await Promise.all([
+      supabase
+        .from('step_progress')
+        .select('step_id')
+        .eq('user_id', user.id)
+        .eq('guide_id', guideId),
+      supabase
+        .from('event_step_states')
+        .select('step_card_id')
+        .eq('user_id', user.id),
+    ]);
 
-    if (error) {
-      console.error('[Codex] getGuideProgress error:', error);
-      return [];
-    }
+    const ids = new Set<string>();
 
-    return data.map(row => row.step_id);
+    for (const row of soloResult.data ?? []) ids.add(row.step_id);
+    for (const row of eventResult.data ?? []) ids.add(row.step_card_id);
+
+    return Array.from(ids);
   },
 
   /**
-   * 5. GET ALL COMPLETED STEP IDs
-   * Returns a Set of every step_id the user has completed across all guides.
-   * Used by the Codex screen to compute real progress percentages without
-   * issuing a separate query per guide.
+   * 6. PIN / UNPIN A CODEX ENTRY
+   * Toggles the is_pinned flag on a codex_entry. Pinned entries float to the
+   * top of their Codex segment. The RLS policy for codex_entries already
+   * allows the owner to UPDATE their own rows, so no additional policy is needed.
+   */
+  async pinEntry(entryId: string, isPinned: boolean) {
+    const { error } = await supabase
+      .from('codex_entries')
+      .update({ is_pinned: isPinned })
+      .eq('id', entryId);
+    if (error) throw error;
+  },
+
+  /**
+   * 7. GET ALL COMPLETED STEP IDs
+   * Returns a Set of every step_id the user has completed across all guides
+   * and all execution modes (solo + event).
+   *
+   * This unified query is what powers the Codex segment progress bars. By
+   * merging both tables, the Codex correctly reflects steps completed whether
+   * the user executed the Guide solo or as part of an Event.
    */
   async getCompletedStepIds(): Promise<Set<string>> {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return new Set();
 
-    const { data, error } = await supabase
-      .from('step_progress')
-      .select('step_id')
-      .eq('user_id', user.id);
+    const [soloResult, eventResult] = await Promise.all([
+      supabase
+        .from('step_progress')
+        .select('step_id')
+        .eq('user_id', user.id),
+      supabase
+        .from('event_step_states')
+        .select('step_card_id')
+        .eq('user_id', user.id),
+    ]);
 
-    if (error) {
-      console.error('[Codex] getCompletedStepIds error:', error);
-      return new Set();
+    if (soloResult.error) {
+      console.error('[Codex] getCompletedStepIds (step_progress) error:', soloResult.error);
+    }
+    if (eventResult.error) {
+      console.error('[Codex] getCompletedStepIds (event_step_states) error:', eventResult.error);
     }
 
-    return new Set(data.map(row => row.step_id));
+    const ids = new Set<string>();
+    for (const row of soloResult.data ?? []) ids.add(row.step_id);
+    for (const row of eventResult.data ?? []) ids.add(row.step_card_id);
+    return ids;
   },
 };
