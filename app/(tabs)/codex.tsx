@@ -83,7 +83,23 @@ type EnrichedEntry = CodexRow & {
   nextStepText:   string | null;
 };
 
-type Segment = 'discover' | 'intentions' | 'in_progress' | 'completed';
+type Segment = 'discover' | 'my_guides' | 'intentions' | 'in_progress' | 'completed';
+
+type MyGuide = {
+  id: string;
+  title: string;
+  summary: string | null;
+  hero_media_url: string | null;
+  stewardship_level: string;
+  difficulty_level: string | null;
+  primary_location_name: string | null;
+  instantiation_count: number;
+  total_step_completions: number;
+  is_archived: boolean;
+  created_at: string;
+  phase_count: number;
+  step_count: number;
+};
 type DiscoverViewMode = 'cards' | 'list';
 
 // ---------------------------------------------------------------------------
@@ -149,6 +165,11 @@ export default function CodexScreen() {
   const [saveToast,       setSaveToast]       = useState(false);
 
   const discoverDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // My Guides segment state
+  const [myGuides,        setMyGuides]        = useState<MyGuide[]>([]);
+  const [myGuidesLoading, setMyGuidesLoading] = useState(false);
+  const [myGuidesFetched, setMyGuidesFetched] = useState(false);
 
   // -------------------------------------------------------------------------
   // Data fetching
@@ -220,7 +241,7 @@ export default function CodexScreen() {
     setDiscoverLoading(true);
     let q = supabase
       .from('guides')
-      .select('id, title, summary, hero_media_url, primary_location_name, difficulty_level, stewardship_level, instantiation_count, total_step_completions, created_at')
+      .select('id, title, summary, hero_media_url, primary_location_name, difficulty_level, stewardship_level, instantiation_count, total_step_completions, created_at, phases(id, title, phase_index, execution_mode, step_cards(id, atomic_action_text, location_name, step_index))')
       .eq('stewardship_level', 'Public')
       .eq('is_archived', false);
 
@@ -236,7 +257,16 @@ export default function CodexScreen() {
     if (error) {
       console.error('[Codex] fetchDiscover error:', error);
     } else {
-      setDiscoverGuides((data ?? []).map(g => ({ ...g, phases: [] })) as GuideSwipeCard[]);
+      const sorted = (data ?? []).map(g => ({
+        ...g,
+        phases: (g.phases ?? [])
+          .sort((a: any, b: any) => a.phase_index - b.phase_index)
+          .map((p: any) => ({
+            ...p,
+            step_cards: (p.step_cards ?? []).sort((a: any, b: any) => a.step_index - b.step_index),
+          })),
+      }));
+      setDiscoverGuides(sorted as GuideSwipeCard[]);
     }
     setDiscoverLoading(false);
     setDiscoverFetched(true);
@@ -259,6 +289,25 @@ export default function CodexScreen() {
     if (data) {
       setDiscoverTagMap(new Map(data.map((t: any) => [t.id, t.label])));
     }
+  }
+
+  async function fetchMyGuides(userId: string) {
+    setMyGuidesLoading(true);
+    const { data, error } = await supabase
+      .from('guides')
+      .select('id, title, summary, hero_media_url, stewardship_level, difficulty_level, primary_location_name, instantiation_count, total_step_completions, is_archived, created_at, phases(id, step_cards(id))')
+      .eq('creator_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (!error && data) {
+      setMyGuides(data.map((g: any) => ({
+        ...g,
+        phase_count: (g.phases ?? []).length,
+        step_count:  (g.phases ?? []).reduce((sum: number, p: any) => sum + (p.step_cards ?? []).length, 0),
+      })));
+    }
+    setMyGuidesLoading(false);
+    setMyGuidesFetched(true);
   }
 
   async function applyDiscoverTagFilter(tagId: string | null) {
@@ -315,6 +364,9 @@ export default function CodexScreen() {
     if (seg === 'discover' && !discoverFetched) {
       fetchDiscover('');
       if (discoverTagMap.size === 0) fetchDiscoverTags();
+    }
+    if (seg === 'my_guides' && !myGuidesFetched && user) {
+      fetchMyGuides(user.id);
     }
   }
 
@@ -402,9 +454,8 @@ export default function CodexScreen() {
   const tagFilteredUnsaved = tagFilteredDiscoverGuides.filter(g => !savedGuideIds.has(g.id));
 
   const segmentCounts: Record<Segment, number> = {
-    // Discover badge shows unsaved guides only — already-saved guides are filtered
-    // from the card deck, so showing the total count would be misleading.
     discover:    unsavedDiscoverGuides.length,
+    my_guides:   myGuides.length,
     intentions:  intentionEntries.length,
     in_progress: inProgressEntries.length,
     completed:   completedEntries.length,
@@ -447,6 +498,7 @@ export default function CodexScreen() {
   function renderSegmentControl() {
     const SEGMENTS: { key: Segment; label: string }[] = [
       { key: 'discover',    label: 'Discover' },
+      { key: 'my_guides',   label: 'My Guides' },
       { key: 'intentions',  label: 'Intentions' },
       { key: 'in_progress', label: 'In Progress' },
       { key: 'completed',   label: 'Completed' },
@@ -491,6 +543,141 @@ export default function CodexScreen() {
           );
         })}
       </ScrollView>
+    );
+  }
+
+  // ── My Guides segment ────────────────────────────────────────────────────
+
+  function visibilityLabel(level: string) {
+    if (level === 'Public')     return 'Public';
+    if (level === 'Guild_Only') return 'Guild Only';
+    return 'Private';
+  }
+  function visibilityIcon(level: string): any {
+    if (level === 'Public')     return 'globe-outline';
+    if (level === 'Guild_Only') return 'people-outline';
+    return 'lock-closed-outline';
+  }
+
+  function renderMyGuideItem({ item }: { item: MyGuide }) {
+    return (
+      <Pressable
+        style={({ pressed }) => [
+          styles.card,
+          { backgroundColor: theme.cardBackground, opacity: pressed ? 0.9 : 1 },
+        ]}
+        onPress={() => router.push({ pathname: '/guide/[id]', params: { id: item.id } })}
+      >
+        {item.hero_media_url ? (
+          <Image source={{ uri: item.hero_media_url }} style={styles.cardImage} resizeMode="cover" />
+        ) : (
+          <View style={[styles.cardImage, styles.cardImageEmpty, { backgroundColor: isDark ? '#1e2330' : '#e8e8e8' }]}>
+            <Ionicons name="book-outline" size={28} color={isDark ? '#333' : '#ccc'} />
+          </View>
+        )}
+        <View style={styles.cardBody}>
+          <View style={styles.titleRow}>
+            <Text style={[styles.title, { color: theme.text, flex: 1 }]} numberOfLines={2}>
+              {item.title}
+            </Text>
+            {/* Edit shortcut */}
+            <TouchableOpacity
+              hitSlop={8}
+              onPress={() => router.push({ pathname: '/create/guide-info', params: { editGuideId: item.id } })}
+              style={{ paddingLeft: 8 }}
+            >
+              <Ionicons name="pencil-outline" size={18} color={theme.tint} />
+            </TouchableOpacity>
+          </View>
+
+          {item.summary ? (
+            <Text style={[styles.summary, { color: subText }]} numberOfLines={2}>{item.summary}</Text>
+          ) : null}
+
+          <View style={styles.metaRow}>
+            {/* Visibility */}
+            <View style={[styles.difficultyBadge, { backgroundColor: isDark ? '#1e2330' : '#f0ece3' }]}>
+              <Ionicons name={visibilityIcon(item.stewardship_level)} size={11} color={theme.tint} style={{ marginRight: 4 }} />
+              <Text style={[styles.difficultyText, { color: theme.tint }]}>
+                {visibilityLabel(item.stewardship_level)}
+              </Text>
+            </View>
+
+            {item.step_count > 0 ? (
+              <Text style={[styles.metaChip, { color: subText }]}>
+                <Ionicons name="footsteps-outline" size={11} />{'  '}{item.step_count} steps
+              </Text>
+            ) : null}
+
+            {item.instantiation_count > 0 ? (
+              <Text style={[styles.metaChip, { color: subText }]}>
+                <Ionicons name="map-outline" size={11} />{'  '}{item.instantiation_count} planned
+              </Text>
+            ) : null}
+          </View>
+        </View>
+      </Pressable>
+    );
+  }
+
+  function renderMyGuidesView() {
+    if (myGuidesLoading) {
+      return <View style={styles.centred}><ActivityIndicator size="large" color={theme.tint} /></View>;
+    }
+
+    if (myGuides.length === 0 && myGuidesFetched) {
+      return (
+        <View style={styles.emptyState}>
+          <Ionicons name="book-outline" size={52} color={theme.tint} style={{ opacity: 0.5 }} />
+          <Text style={[styles.emptyTitle, { color: theme.text }]}>
+            You haven't created any Guides yet.
+          </Text>
+          <Text style={[styles.emptyHint, { color: subText }]}>
+            Share your knowledge — build a Guide and let others follow in your footsteps.
+          </Text>
+          <TouchableOpacity
+            style={[styles.findButton, { backgroundColor: theme.tint }]}
+            onPress={() => router.push('/create/guide-info')}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.findButtonText}>Create a Guide</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    return (
+      <FlatList
+        data={myGuides}
+        keyExtractor={item => item.id}
+        renderItem={renderMyGuideItem}
+        contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
+        ListHeaderComponent={
+          <View style={[styles.myGuidesStats, { backgroundColor: isDark ? '#1a1f2e' : '#f9f5ee' }]}>
+            <View style={styles.completedStatItem}>
+              <Text style={[styles.completedStatValue, { color: theme.tint }]}>{myGuides.length}</Text>
+              <Text style={[styles.completedStatLabel, { color: subText }]}>
+                {myGuides.length === 1 ? 'Guide' : 'Guides'} Created
+              </Text>
+            </View>
+            <View style={[styles.completedStatDivider, { backgroundColor: isDark ? '#2a2f40' : '#e0d9cc' }]} />
+            <View style={styles.completedStatItem}>
+              <Text style={[styles.completedStatValue, { color: theme.tint }]}>
+                {myGuides.reduce((s, g) => s + g.instantiation_count, 0).toLocaleString()}
+              </Text>
+              <Text style={[styles.completedStatLabel, { color: subText }]}>Times Planned</Text>
+            </View>
+            <View style={[styles.completedStatDivider, { backgroundColor: isDark ? '#2a2f40' : '#e0d9cc' }]} />
+            <View style={styles.completedStatItem}>
+              <Text style={[styles.completedStatValue, { color: theme.tint }]}>
+                {myGuides.reduce((s, g) => s + g.total_step_completions, 0).toLocaleString()}
+              </Text>
+              <Text style={[styles.completedStatLabel, { color: subText }]}>Steps Taken</Text>
+            </View>
+          </View>
+        }
+      />
     );
   }
 
@@ -1068,6 +1255,7 @@ export default function CodexScreen() {
         <>
           {renderSegmentControl()}
           {segment === 'discover'    && renderDiscoverView()}
+          {segment === 'my_guides'   && renderMyGuidesView()}
           {segment === 'intentions'  && renderIntentionsView()}
           {segment === 'in_progress' && renderInProgressView()}
           {segment === 'completed'   && renderCompletedView()}
@@ -1134,6 +1322,16 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   tagPillText: { fontSize: 13, fontWeight: '600' },
+
+  // My Guides stats header
+  myGuidesStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 12,
+    marginHorizontal: 0,
+    marginBottom: 16,
+    paddingVertical: 16,
+  },
 
   // Discover toolbar
   discoverToolbar: {

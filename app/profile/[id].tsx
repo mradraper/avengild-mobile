@@ -5,7 +5,7 @@
  *   id, username, full_name, avatar_url, website,
  *   event_instantiations, global_step_completions
  *
- * No bio or location columns exist yet — those are planned for a future migration.
+ * Bio and location columns are added by Migration 018.
  *
  * Entry points:
  *   - Guild Roster (tapping a member row)
@@ -17,7 +17,7 @@ import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { supabase } from '@/lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -40,6 +40,8 @@ type ProfileData = {
   full_name: string | null;
   avatar_url: string | null;
   website: string | null;
+  bio: string | null;
+  location_name: string | null;
   event_instantiations: number;
   global_step_completions: number;
 };
@@ -55,17 +57,20 @@ export default function ProfileScreen() {
 
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const router = useRouter();
 
   useEffect(() => {
     if (!id || typeof id !== 'string') return;
     fetchProfile(id);
+    supabase.auth.getUser().then(({ data }) => setCurrentUserId(data.user?.id ?? null));
   }, [id]);
 
   async function fetchProfile(userId: string) {
     setLoading(true);
     const { data } = await supabase
       .from('profiles')
-      .select('id, username, full_name, avatar_url, website, event_instantiations, global_step_completions')
+      .select('id, username, full_name, avatar_url, website, bio, location_name, event_instantiations, global_step_completions')
       .eq('id', userId)
       .single();
 
@@ -111,6 +116,15 @@ export default function ProfileScreen() {
           headerBackTitle: '',
           headerTitleStyle: { fontFamily: 'Chivo_900Black', fontSize: 18 },
           headerStyle: { backgroundColor: theme.cardBackground },
+          headerRight: currentUserId === profile.id ? () => (
+            <Pressable
+              onPress={() => router.push({ pathname: '/profile/edit' })}
+              hitSlop={12}
+              style={{ paddingHorizontal: 8 }}
+            >
+              <Ionicons name="pencil-outline" size={22} color={theme.tint} />
+            </Pressable>
+          ) : undefined,
         }}
       />
 
@@ -133,7 +147,20 @@ export default function ProfileScreen() {
           {profile.username && (
             <Text style={styles.handle}>@{profile.username}</Text>
           )}
+          {profile.location_name && (
+            <View style={styles.locationRow}>
+              <Ionicons name="location-outline" size={14} color="#999" />
+              <Text style={styles.locationText}>{profile.location_name}</Text>
+            </View>
+          )}
         </View>
+
+        {/* Bio */}
+        {profile.bio && (
+          <View style={[styles.bioCard, { backgroundColor: theme.cardBackground }]}>
+            <Text style={[styles.bioText, { color: theme.text }]}>{profile.bio}</Text>
+          </View>
+        )}
 
         {/* Stats */}
         <View style={[styles.statsCard, { backgroundColor: theme.cardBackground }]}>
@@ -254,4 +281,19 @@ const styles = StyleSheet.create({
     fontSize: 14,
     flex: 1,
   },
+
+  locationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 6,
+  },
+  locationText: { fontSize: 13, color: '#999' },
+
+  bioCard: {
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+  },
+  bioText: { fontSize: 14, lineHeight: 21 },
 });

@@ -1,4 +1,5 @@
 import { useColorScheme } from '@/components/useColorScheme';
+import { setupForegroundNotificationHandler } from '@/lib/notifications';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { useFonts } from 'expo-font';
@@ -13,6 +14,7 @@ import {
   Chivo_700Bold,
   Chivo_900Black
 } from '@expo-google-fonts/chivo';
+import { guideCache } from '@/lib/guideCache';
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -35,6 +37,18 @@ export default function RootLayout() {
     Chivo_900Black,
     ...FontAwesome.font,
   });
+
+  // Register foreground notification handler once on app startup
+  useEffect(() => {
+    const cleanup = setupForegroundNotificationHandler();
+    return cleanup;
+  }, []);
+
+  // Start offline sync listener — flushes queued step completions when connectivity returns
+  useEffect(() => {
+    const unsub = guideCache.startSyncListener();
+    return unsub;
+  }, []);
 
   // Expo Router uses Error Boundaries to catch errors in the navigation tree.
   useEffect(() => {
@@ -82,6 +96,10 @@ function RootLayoutNav() {
         <Stack.Screen name="event" options={{ headerShown: false }} />
         {/* Profile view — pushes from Guild roster or event crew */}
         <Stack.Screen name="profile" options={{ headerShown: false }} />
+        {/* Forum thread detail — pushes from Guild Forums tab */}
+        <Stack.Screen name="forum" options={{ headerShown: true }} />
+        {/* Profile edit — pushes from own public profile */}
+        <Stack.Screen name="profile/edit" options={{ presentation: 'modal', headerShown: true }} />
       </Stack>
     </ThemeProvider>
   );

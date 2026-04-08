@@ -1,13 +1,19 @@
-import React, { useEffect, useState } from 'react';
-import { Image, Linking, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { FlatList, Image, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import type { ChecklistItem, StepCard as StepCardType } from '@/lib/database.types';
+import { supabase } from '@/lib/supabase';
 import { UserPreferences } from '@/lib/userPreferences';
 import { BeginnerMistakeBanner } from './BeginnerMistakeBanner';
 import { IntentTagBadge, getIntentTagBorderColour } from './IntentTagBadge';
 import { StepTimer } from './StepTimer';
+
+type DecisionOption = {
+  label: string;
+  linked_step_id: string | null;
+};
 
 type Props = {
   step: StepCardType;
@@ -17,6 +23,9 @@ type Props = {
   /** When provided and the step has a linked_guide_id, tapping navigates to
    *  that guide rather than toggling completion. */
   onLinkedGuidePress?: (guideId: string) => void;
+  /** Called when the user taps a decision branch option. Provides the chosen
+   *  linked_step_id (or null = end of branch). */
+  onDecisionSelect?: (linkedStepId: string | null) => void;
   /** Compact mode renders a condensed row for Freeform (checklist) layout. */
   compact?: boolean;
 };
@@ -33,7 +42,7 @@ type Props = {
  * Steps with is_optional=true show an "Optional" badge.
  * Steps with location_anchor render a "Navigate" button that opens Maps.
  */
-export function StepCard({ step, stepNumber, isCompleted, onPress, onLinkedGuidePress, compact = false }: Props) {
+export function StepCard({ step, stepNumber, isCompleted, onPress, onLinkedGuidePress, onDecisionSelect, compact = false }: Props) {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'dark'];
   const isDark = colorScheme === 'dark';
@@ -48,12 +57,96 @@ export function StepCard({ step, stepNumber, isCompleted, onPress, onLinkedGuide
   // Checklist item state — persisted to AsyncStorage, keyed by step ID
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set());
 
+  // Step media gallery — rows from step_media table
+  type StepMediaRow = { id: string; url: string; caption: string | null; display_order: number };
+  const [stepMedia,        setStepMedia]        = useState<StepMediaRow[]>([]);
+  const [galleryVisible,   setGalleryVisible]   = useState(false);
+  const [galleryIndex,     setGalleryIndex]     = useState(0);
+
+  // Personal note state — loaded from user_step_notes table on mount
+  const [noteUserId, setNoteUserId]   = useState<string | null>(null);
+  const [noteText,   setNoteText]     = useState('');
+  const [noteDraft,  setNoteDraft]    = useState('');
+  const [noteExpanded, setNoteExpanded] = useState(false);
+  // Track the last-saved value so we skip redundant DB writes on blur
+  const savedNoteRef = useRef('');
+
   useEffect(() => {
     if (step.step_type !== 'checklist') return;
     UserPreferences.getChecklistState(step.id).then(saved => {
       if (saved.size > 0) setCheckedItems(saved);
     });
   }, [step.id, step.step_type]);
+
+  // Fetch step_media rows for the gallery (full card only)
+  useEffect(() => {
+    if (compact) return;
+    supabase
+      .from('step_media')
+      .select('id, url, caption, display_order')
+      .eq('step_id', step.id)
+      .order('display_order', { ascending: true })
+      .then(({ data }) => { if (data && data.length > 0) setStepMedia(data as any); });
+  }, [step.id, compact]);
+
+  // Load personal note for authenticated users. Skipped in compact mode since
+  // notes are only shown in the full card layout.
+  useEffect(() => {
+    if (compact) return;
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) return;
+      setNoteUserId(user.id);
+      supabase
+        .from('user_step_notes')
+        .select('note_text')
+        .eq('user_id', user.id)
+        .eq('step_id', step.id)
+        .maybeSingle()
+        .then(({ data }) => {
+          const text = data?.note_text ?? '';
+          setNoteText(text);
+          savedNoteRef.current = text;
+        });
+    });
+  }, [step.id, compact]);
+
+  function handleNoteExpand() {
+    setNoteDraft(noteText);
+    setNoteExpanded(true);
+  }
+
+  async function handleNoteBlur() {
+    if (!noteUserId) return;
+    const text = noteDraft.trim();
+
+    // Skip write if nothing changed
+    if (text === savedNoteRef.current) {
+      setNoteExpanded(false);
+      return;
+    }
+
+    if (text === '') {
+      // Clear note — delete the row
+      await supabase
+        .from('user_step_notes')
+        .delete()
+        .eq('user_id', noteUserId)
+        .eq('step_id', step.id);
+      setNoteText('');
+      savedNoteRef.current = '';
+    } else {
+      await supabase
+        .from('user_step_notes')
+        .upsert(
+          { user_id: noteUserId, step_id: step.id, note_text: text, updated_at: new Date().toISOString() },
+          { onConflict: 'user_id, step_id' },
+        );
+      setNoteText(text);
+      savedNoteRef.current = text;
+    }
+
+    setNoteExpanded(false);
+  }
 
   function toggleChecklistItem(itemId: string) {
     setCheckedItems(prev => {
@@ -227,13 +320,87 @@ export function StepCard({ step, stepNumber, isCompleted, onPress, onLinkedGuide
           />
         )}
 
-        {/* Media thumbnail */}
-        {firstMedia && firstMedia.type === 'photo' && (
+        {/* Decision choices — rendered for decision-type steps */}
+        {step.step_type === 'decision' &&
+          Array.isArray((step as any).decision_options) &&
+          ((step as any).decision_options as DecisionOption[]).length > 0 && (
+          <View style={styles.decisionContainer}>
+            <Text style={[styles.decisionPrompt, { color: theme.tint }]}>Choose a path:</Text>
+            {((step as any).decision_options as DecisionOption[]).map((opt, idx) => (
+              <TouchableOpacity
+                key={idx}
+                style={[styles.decisionOption, { borderColor: theme.tint + '66', backgroundColor: theme.tint + '12' }]}
+                onPress={() => onDecisionSelect?.(opt.linked_step_id)}
+                activeOpacity={0.75}
+              >
+                <Ionicons name="git-branch-outline" size={14} color={theme.tint} style={{ marginRight: 8 }} />
+                <Text style={[styles.decisionOptionLabel, { color: theme.tint }]}>{opt.label}</Text>
+                <Ionicons name="chevron-forward" size={14} color={theme.tint} style={{ marginLeft: 'auto' }} />
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
+        {/* Media thumbnail (legacy media_payload scalar — kept for backwards compat) */}
+        {firstMedia && firstMedia.type === 'photo' && stepMedia.length === 0 && (
           <Image
             source={{ uri: firstMedia.url }}
             style={styles.mediaThumbnail}
             resizeMode="cover"
           />
+        )}
+
+        {/* Step media gallery — horizontal strip from step_media table */}
+        {stepMedia.length > 0 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.mediaStrip}
+            contentContainerStyle={{ gap: 8, paddingRight: 4 }}
+          >
+            {stepMedia.map((m, idx) => (
+              <TouchableOpacity
+                key={m.id}
+                onPress={() => { setGalleryIndex(idx); setGalleryVisible(true); }}
+                activeOpacity={0.85}
+              >
+                <Image source={{ uri: m.url }} style={styles.mediaTile} resizeMode="cover" />
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
+
+        {/* Full-screen gallery modal */}
+        {galleryVisible && (
+          <Modal visible animationType="fade" onRequestClose={() => setGalleryVisible(false)}>
+            <View style={styles.galleryModal}>
+              <Pressable style={styles.galleryClose} onPress={() => setGalleryVisible(false)} hitSlop={16}>
+                <View style={styles.galleryCloseBtn}>
+                  <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>✕</Text>
+                </View>
+              </Pressable>
+              <FlatList
+                data={stepMedia}
+                keyExtractor={m => m.id}
+                horizontal
+                pagingEnabled
+                showsHorizontalScrollIndicator={false}
+                initialScrollIndex={galleryIndex}
+                getItemLayout={(_, index) => ({ length: 400, offset: 400 * index, index })}
+                renderItem={({ item }) => (
+                  <View style={styles.galleryPage}>
+                    <Image source={{ uri: item.url }} style={styles.galleryImage} resizeMode="contain" />
+                    {item.caption ? (
+                      <Text style={styles.galleryCaption}>{item.caption}</Text>
+                    ) : null}
+                  </View>
+                )}
+              />
+              <Text style={styles.galleryCounter}>
+                {galleryIndex + 1} / {stepMedia.length}
+              </Text>
+            </View>
+          </Modal>
         )}
 
         {/* Curation notes */}
@@ -266,6 +433,35 @@ export function StepCard({ step, stepNumber, isCompleted, onPress, onLinkedGuide
               {step.location_name ? `Navigate to ${step.location_name}` : 'Navigate'}
             </Text>
           </TouchableOpacity>
+        )}
+
+        {/* Personal note — only shown to authenticated users; not on embedded guide steps */}
+        {noteUserId && !isEmbeddedGuide && (
+          <View style={styles.noteSection}>
+            {noteExpanded ? (
+              <TextInput
+                style={[styles.noteInput, { color: theme.text }]}
+                multiline
+                value={noteDraft}
+                onChangeText={setNoteDraft}
+                onBlur={handleNoteBlur}
+                placeholder="Add a personal note…"
+                placeholderTextColor="#786C50"
+                autoFocus
+              />
+            ) : (
+              <TouchableOpacity
+                style={styles.noteTapTarget}
+                onPress={handleNoteExpand}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="pencil-outline" size={12} color="#786C50" />
+                <Text style={[styles.noteTapText, noteText ? { color: isDark ? '#ccc' : '#555' } : {}]} numberOfLines={2}>
+                  {noteText || 'Add a personal note…'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
         )}
       </View>
     </TouchableOpacity>
@@ -302,6 +498,32 @@ const styles = StyleSheet.create({
   embeddedGuideRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4, marginBottom: 6 },
   embeddedGuideLabel: { fontSize: 12, color: '#BC8A2F', fontWeight: '700', marginLeft: 4, letterSpacing: 0.3 },
   mediaThumbnail: { width: '100%', height: 160, borderRadius: 8, marginVertical: 8 },
+
+  // Multi-image media strip
+  mediaStrip: { marginVertical: 8 },
+  mediaTile: { width: 120, height: 90, borderRadius: 8 },
+
+  // Full-screen gallery
+  galleryModal: { flex: 1, backgroundColor: '#000', justifyContent: 'center' },
+  galleryPage: { width: 400, alignItems: 'center', justifyContent: 'center', padding: 16 },
+  galleryImage: { width: 368, height: 368 },
+  galleryCaption: { color: '#ccc', fontSize: 13, marginTop: 12, textAlign: 'center', lineHeight: 18 },
+  galleryClose: { position: 'absolute', top: 48, right: 20, zIndex: 10 },
+  galleryCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  galleryCounter: {
+    position: 'absolute',
+    bottom: 48,
+    alignSelf: 'center',
+    color: '#999',
+    fontSize: 13,
+  },
   note: { fontSize: 14, lineHeight: 20 },
   locationRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, opacity: 0.8 },
   locationText: { fontSize: 12, marginLeft: 4, fontWeight: '500' },
@@ -330,6 +552,19 @@ const styles = StyleSheet.create({
   },
   itemLabel: { flex: 1, fontSize: 14 },
 
+  // Decision step
+  decisionContainer: { marginTop: 12, gap: 8 },
+  decisionPrompt: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 2 },
+  decisionOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  decisionOptionLabel: { fontSize: 14, fontWeight: '600', flex: 1 },
+
   // Navigate button
   navigateBtn: {
     flexDirection: 'row',
@@ -343,6 +578,37 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   navigateBtnText: { fontSize: 13, fontWeight: '700' },
+
+  // Personal note
+  noteSection: {
+    marginTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(188,138,47,0.15)',
+    paddingTop: 8,
+  },
+  noteTapTarget: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+  },
+  noteTapText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#786C50',
+    fontStyle: 'italic',
+    lineHeight: 18,
+  },
+  noteInput: {
+    fontSize: 13,
+    lineHeight: 19,
+    borderWidth: 1,
+    borderColor: 'rgba(188,138,47,0.3)',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    minHeight: 64,
+    textAlignVertical: 'top',
+  },
 
   // Compact mode
   compactCard: {

@@ -1,17 +1,18 @@
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { Codex } from '@/lib/codex';
+import { guideCache } from '@/lib/guideCache';
 import type { Guide, PhaseWithSteps } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { UserPreferences } from '@/lib/userPreferences';
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { BirdsEyeHeader } from '@/components/guide/BirdsEyeHeader';
 import { FreeformView } from '@/components/guide/FreeformView';
 import { GuideCompletionModal } from '@/components/guide/GuideCompletionModal';
-import { MediaHeader } from '@/components/guide/MediaHeader';
+import { GuideMapView, type GeoStep } from '@/components/guide/GuideMapView';
 import { PhaseNavigator } from '@/components/guide/PhaseNavigator';
 import { SequentialView } from '@/components/guide/SequentialView';
 import { ShareToHearthModal } from '@/components/guide/ShareToHearthModal';
@@ -40,6 +41,12 @@ export default function GuideDetailScreen() {
   const [userGuilds,         setUserGuilds]         = useState<UserGuild[]>([]);
   const [isCreator,          setIsCreator]          = useState(false);
 
+  // Fork lineage breadcrumb — title + id of the immediate parent guide
+  const [parentGuide, setParentGuide] = useState<{ id: string; title: string } | null>(null);
+
+  // View toggle: 'steps' or 'map' (map tab only shown when ≥2 geo-tagged steps exist)
+  const [viewTab, setViewTab] = useState<'steps' | 'map'>('steps');
+
   // Auto-advance state
   const [autoAdvance,        setAutoAdvance]        = useState(false);
   const [showAdvancePrompt,  setShowAdvancePrompt]  = useState(false);
@@ -51,6 +58,10 @@ export default function GuideDetailScreen() {
   const positionLoadedRef  = useRef(false);
   // Ref: prevents the advance prompt alert from firing multiple times
   const advancePromptShownRef = useRef(false);
+  // Ref: always holds the latest completedSteps so useFocusEffect avoids a
+  // stale closure without adding completedSteps to its dependency array.
+  const completedStepsRef = useRef(completedSteps);
+  useEffect(() => { completedStepsRef.current = completedSteps; }, [completedSteps]);
 
   useEffect(() => {
     if (id) {
@@ -91,6 +102,65 @@ export default function GuideDetailScreen() {
   }, [activePhaseIndex, sequentialStepIndex]);
 
   // -------------------------------------------------------------------------
+  // Sub-guide completion propagation
+  // Fires when this screen regains focus (i.e., after the user returns from
+  // a linked sub-guide). For each step with a linked_guide_id that is not
+  // yet marked complete, checks if all required steps in the sub-guide have
+  // been finished. If so, auto-marks the parent step complete.
+  // -------------------------------------------------------------------------
+  useFocusEffect(
+    useCallback(() => {
+      if (!id || !positionLoadedRef.current) return;
+      propagateSubGuideCompletions();
+    }, [id, phases]),
+  );
+
+  async function propagateSubGuideCompletions() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const current = completedStepsRef.current;
+
+    // Embedded guide steps that the user has not yet checked off
+    const uncompletedLinked = phases
+      .flatMap(p => p.step_cards)
+      .filter(s => s.linked_guide_id && !current.has(s.id));
+
+    if (uncompletedLinked.length === 0) return;
+
+    const newlyCompleted: string[] = [];
+
+    for (const step of uncompletedLinked) {
+      const { data: linkedPhases } = await supabase
+        .from('phases')
+        .select('step_cards(*)')
+        .eq('guide_id', step.linked_guide_id);
+
+      if (!linkedPhases) continue;
+
+      const requiredIds = (linkedPhases as any[])
+        .flatMap((p: any) => p.step_cards ?? [])
+        .filter((s: any) => !s.is_optional && !s.linked_guide_id)
+        .map((s: any) => s.id as string);
+
+      if (requiredIds.length === 0) continue;
+
+      if (requiredIds.every(sid => current.has(sid))) {
+        await Codex.completeStep(id!, step.id);
+        newlyCompleted.push(step.id);
+      }
+    }
+
+    if (newlyCompleted.length > 0) {
+      setCompletedSteps(prev => {
+        const next = new Set(prev);
+        for (const sid of newlyCompleted) next.add(sid);
+        return next;
+      });
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Completion detection — fires when completedSteps or phases change
   // -------------------------------------------------------------------------
   useEffect(() => {
@@ -112,6 +182,23 @@ export default function GuideDetailScreen() {
 
   async function loadGuideData() {
     try {
+      // Show cached data immediately (stale-while-revalidate)
+      const cached = await guideCache.get(id!);
+      if (cached) {
+        setGuide(cached.guide);
+        setPhases(cached.phases);
+        const { data: { user } } = await supabase.auth.getUser();
+        setIsCreator(user?.id === cached.guide.creator_id);
+        // If cache is fresh, skip the network fetch
+        if (!guideCache.isStale(cached)) {
+          setLoading(false);
+          positionLoadedRef.current = true;
+          return;
+        }
+        // Cache is stale — continue to refetch in background (loading stays false)
+        setLoading(false);
+      }
+
       // Fetch guide metadata
       const { data: guideData } = await supabase
         .from('guides')
@@ -126,6 +213,16 @@ export default function GuideDetailScreen() {
 
         // Resolve auto-advance preference
         await resolveAutoAdvance(guideData.auto_advance_default ?? false);
+
+        // Fetch parent guide title for fork lineage breadcrumb (up to 1 level)
+        if (guideData.immediate_parent_id) {
+          const { data: parent } = await supabase
+            .from('guides')
+            .select('id, title')
+            .eq('id', guideData.immediate_parent_id)
+            .maybeSingle();
+          if (parent) setParentGuide({ id: parent.id, title: parent.title });
+        }
       }
 
       // Fetch phases with their step_cards, ordered by phase_index and step_index
@@ -143,6 +240,10 @@ export default function GuideDetailScreen() {
           ),
         }));
         setPhases(sorted);
+        // Persist to offline cache for stale-while-revalidate
+        if (guideData) {
+          guideCache.set(id!, { guide: guideData, phases: sorted }).catch(() => {});
+        }
       }
 
       // Load Codex progress (bridge: step_progress table)
@@ -272,10 +373,28 @@ export default function GuideDetailScreen() {
   const activeSteps = activePhase?.step_cards ?? [];
   const isSequential = activePhase?.execution_mode === 'Sequential';
 
-  // In Sequential mode, expose the active step's first photo as the media URL.
-  // In Freeform mode, no single step is "active", so the hero image always shows.
-  const activeStep = isSequential ? (activeSteps[sequentialStepIndex] ?? null) : null;
-  const activeStepMediaUrl = activeStep?.media_payload?.[0]?.url ?? null;
+  // Collect all geo-tagged steps across all phases for the map tab
+  const geoSteps: GeoStep[] = [];
+  let globalStepIndex = 0;
+  for (const phase of phases) {
+    for (const step of phase.step_cards) {
+      const anchor = step.location_anchor as any;
+      if (anchor?.coordinates) {
+        // PostgREST Geography(Point) → { type: 'Point', coordinates: [lng, lat] }
+        const [lng, lat] = anchor.coordinates;
+        geoSteps.push({
+          id:        step.id,
+          title:     step.atomic_action_text ?? '',
+          lat,
+          lng,
+          stepIndex: globalStepIndex,
+        });
+      }
+      globalStepIndex++;
+    }
+  }
+  const showMapTab = geoSteps.length >= 2;
+
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -325,12 +444,6 @@ export default function GuideDetailScreen() {
         }}
       />
 
-      {/* Media header — shows hero image by default, crossfades to active step media */}
-      <MediaHeader
-        heroUrl={guide?.hero_media_url ?? null}
-        activeMediaUrl={activeStepMediaUrl}
-      />
-
       {/* Bird's Eye collapsible header */}
       {guide && (
         <BirdsEyeHeader
@@ -342,8 +455,65 @@ export default function GuideDetailScreen() {
         />
       )}
 
-      {/* Phase tab bar */}
-      {phases.length > 1 && (
+      {/* Fork lineage breadcrumb — shown when this guide was forked from another */}
+      {parentGuide && (
+        <Pressable
+          style={[styles.forkBreadcrumb, { backgroundColor: theme.tint + '18', borderColor: theme.tint + '44' }]}
+          onPress={() => router.push({ pathname: '/guide/[id]', params: { id: parentGuide.id } })}
+        >
+          <Ionicons name="git-branch-outline" size={14} color={theme.tint} style={{ marginRight: 6 }} />
+          <Text style={[styles.forkBreadcrumbText, { color: theme.tint }]} numberOfLines={1}>
+            Forked from <Text style={{ fontFamily: 'Chivo_700Bold' }}>{parentGuide.title}</Text>
+          </Text>
+          <Ionicons name="chevron-forward" size={13} color={theme.tint} style={{ marginLeft: 'auto' }} />
+        </Pressable>
+      )}
+
+      {/* Steps / Map toggle — only shown when ≥2 geo-tagged steps exist */}
+      {showMapTab && (
+        <View style={[styles.viewToggleBar, { backgroundColor: theme.cardBackground, borderBottomColor: '#eee' }]}>
+          <Pressable
+            style={[styles.viewToggleBtn, viewTab === 'steps' && { borderBottomColor: theme.tint, borderBottomWidth: 2 }]}
+            onPress={() => setViewTab('steps')}
+          >
+            <Ionicons name="list-outline" size={16} color={viewTab === 'steps' ? theme.tint : '#999'} />
+            <Text style={[styles.viewToggleText, { color: viewTab === 'steps' ? theme.tint : '#999' }]}>Steps</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.viewToggleBtn, viewTab === 'map' && { borderBottomColor: theme.tint, borderBottomWidth: 2 }]}
+            onPress={() => setViewTab('map')}
+          >
+            <Ionicons name="map-outline" size={16} color={viewTab === 'map' ? theme.tint : '#999'} />
+            <Text style={[styles.viewToggleText, { color: viewTab === 'map' ? theme.tint : '#999' }]}>Map</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {/* Map view */}
+      {viewTab === 'map' && showMapTab && (
+        <GuideMapView
+          steps={geoSteps}
+          onStepPress={(stepIndex) => {
+            // Resolve which phase and within-phase index this global step index maps to
+            let idx = 0;
+            for (let pi = 0; pi < phases.length; pi++) {
+              const phase = phases[pi];
+              for (let si = 0; si < phase.step_cards.length; si++) {
+                if (idx === stepIndex) {
+                  setActivePhaseIndex(pi);
+                  setSequentialStepIndex(si);
+                  setViewTab('steps');
+                  return;
+                }
+                idx++;
+              }
+            }
+          }}
+        />
+      )}
+
+      {/* Phase tab bar — hidden while map is shown */}
+      {viewTab === 'steps' && phases.length > 1 && (
         <PhaseNavigator
           phases={phases}
           activePhaseIndex={activePhaseIndex}
@@ -353,11 +523,12 @@ export default function GuideDetailScreen() {
       )}
 
       {/* Step execution area */}
-      {isSequential ? (
+      {viewTab === 'steps' && (isSequential ? (
         <SequentialView
           steps={activeSteps}
           completedSteps={completedSteps}
           onStepToggle={handleStepToggle}
+          heroImageUrl={guide?.hero_media_url ?? null}
           currentIndex={sequentialStepIndex}
           onIndexChange={setSequentialStepIndex}
           onLinkedGuidePress={handleLinkedGuidePress}
@@ -369,13 +540,15 @@ export default function GuideDetailScreen() {
           steps={activeSteps}
           completedSteps={completedSteps}
           onStepToggle={handleStepToggle}
+          heroImageUrl={guide?.hero_media_url ?? null}
           onLinkedGuidePress={handleLinkedGuidePress}
         />
-      )}
+      ))}
 
       <ShareToHearthModal
         visible={showShareModal}
         guideId={id!}
+        guideTitle={guide?.title}
         userGuilds={userGuilds}
         onClose={() => setShowShareModal(false)}
       />
@@ -397,4 +570,28 @@ export default function GuideDetailScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  forkBreadcrumb: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+  },
+  forkBreadcrumbText: { fontSize: 13, flex: 1 },
+
+  viewToggleBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+  },
+  viewToggleBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  viewToggleText: { fontSize: 13, fontWeight: '600' },
 });
