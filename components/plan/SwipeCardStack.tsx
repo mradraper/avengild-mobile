@@ -69,13 +69,17 @@ type Props = {
   onPlan:  (guide: GuideSwipeCard) => void;
   onSkip:  () => void;
   onEmpty?: () => void;
+  /** Label on the right-swipe stamp. Defaults to "PLAN IT". */
+  rightStampLabel?: string;
+  /** Label on the right action button. Defaults to "Plan it  ✓". */
+  rightBtnLabel?: string;
 };
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export function SwipeCardStack({ guides, onPlan, onSkip, onEmpty }: Props) {
+export function SwipeCardStack({ guides, onPlan, onSkip, onEmpty, rightStampLabel = 'PLAN IT', rightBtnLabel = 'Plan it  ✓' }: Props) {
   const position = useRef(new Animated.ValueXY()).current;
 
   /**
@@ -252,9 +256,9 @@ export function SwipeCardStack({ guides, onPlan, onSkip, onEmpty }: Props) {
         ]}
         {...panResponder.panHandlers}
       >
-        {/* Gold "PLAN IT" stamp */}
+        {/* Gold right-action stamp */}
         <Animated.View style={[styles.intentLabel, styles.planLabel, { opacity: planOpacity }]}>
-          <Text style={styles.planLabelText}>PLAN IT</Text>
+          <Text style={styles.planLabelText}>{rightStampLabel}</Text>
         </Animated.View>
 
         {/* Muted "SKIP" stamp */}
@@ -280,7 +284,7 @@ export function SwipeCardStack({ guides, onPlan, onSkip, onEmpty }: Props) {
           onPress={() => swipeOff('right')}
           activeOpacity={0.8}
         >
-          <Text style={styles.planBtnText}>Plan it  ✓</Text>
+          <Text style={styles.planBtnText}>{rightBtnLabel}</Text>
         </TouchableOpacity>
       </View>
     </View>

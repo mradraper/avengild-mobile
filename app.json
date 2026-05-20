@@ -2,7 +2,7 @@
   "expo": {
     "name": "avengild-mobile",
     "slug": "avengild-mobile",
-    "version": "1.0.0",
+    "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "avengildmobile",
@@ -14,16 +14,19 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "buildNumber": "1"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
+      "versionCode": 1,
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "softwareKeyboardLayoutMode": "resize"
+      "softwareKeyboardLayoutMode": "resize",
+      "package": "com.mradraper.avengildmobile"
     },
     "web": {
       "bundler": "metro",
@@ -37,6 +40,12 @@
         "expo-image-picker",
         {
           "photosPermission": "Avengild accesses your photos to let you add images to guides and steps."
+        }
+      ],
+      [
+        "react-native-maps",
+        {
+          "googleMapsApiKey": "PLACEHOLDER_REPLACE_BEFORE_ANDROID_BUILD"
         }
       ]
     ],

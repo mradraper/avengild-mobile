@@ -263,6 +263,12 @@ export type DatabaseSchema = {
        * Added in migration 008.
        */
       auto_advance_default: boolean;
+      /**
+       * Activity category. Drives context-specific UI on Events created from
+       * this Guide. Known values: general, trip, cooking, outdoor, climbing,
+       * dining, fitness, cultural, social. Added in migration 014.
+       */
+      activity_type: string;
       created_at: string;
       updated_at: string | null;
     };
@@ -272,6 +278,7 @@ export type DatabaseSchema = {
       title: string;
       description?: string | null;
       summary?: string | null;
+      activity_type?: string;
       hero_media_url?: string | null;
       primary_location_name?: string | null;
       primary_coordinates?: GeographyPoint | null;
@@ -639,6 +646,33 @@ export type DatabaseSchema = {
   };
 
   // ---------------------------------------------------------------------------
+  // guild_applications
+  // Membership requests submitted by users wishing to join a private guild.
+  // Created in migration 010.
+  // ---------------------------------------------------------------------------
+  guild_applications: {
+    Row: {
+      id:            string;
+      guild_id:      string;
+      applicant_id:  string;
+      message:       string | null;
+      /** One of: 'pending' | 'approved' | 'rejected'. */
+      status:        string;
+      created_at:    string;
+      reviewed_at:   string | null;
+      reviewed_by:   string | null;
+    };
+    Insert: {
+      id?:           string;
+      guild_id:      string;
+      applicant_id:  string;
+      message?:      string | null;
+      status?:       string;
+    };
+    Update: Partial<Tables<'guild_applications'>['Insert']>;
+  };
+
+  // ---------------------------------------------------------------------------
   // tags  (Discovery Engine — Soft Metadata)
   // Flexible tagging dictionary. Tags are created on demand and reused
   // across Guides via the guide_tags join table.
@@ -696,6 +730,18 @@ export type DatabaseSchema = {
       title: string;
       /** Optional start time. May be set after initial creation. */
       start_time: string | null;
+      /**
+       * Optional end time for multi-day events. NULL for single-day events.
+       * When set the UI renders a date range in all event headers.
+       * Added in migration 014.
+       */
+      end_time: string | null;
+      /**
+       * Top-level activity metadata. Shape varies by the source guide's
+       * activity_type. Safe to extend freely — no migration required.
+       * Added in migration 014.
+       */
+      activity_context: Record<string, unknown>;
       /** True once this event has been republished as a new forked Guide. */
       is_published: boolean;
       /** FK → guides. The new Guide created when this event was published. */
@@ -721,6 +767,8 @@ export type DatabaseSchema = {
       published_guide_id?: string | null;
       parent_event_id?: string | null;
       removed_step_ids?: string[];
+      end_time?: string | null;
+      activity_context?: Record<string, unknown>;
     };
     Update: Partial<Tables<'events'>['Insert']>;
   };
@@ -924,6 +972,75 @@ export type DatabaseSchema = {
   };
 
   // ---------------------------------------------------------------------------
+  // user_connections  (Migration 013 — social graph)
+  // ---------------------------------------------------------------------------
+  user_connections: {
+    Row: {
+      requester_id: string;
+      addressee_id: string;
+      /** 'pending' until the addressee accepts; 'accepted' thereafter. */
+      status: 'pending' | 'accepted';
+      created_at: string;
+    };
+    Insert: {
+      requester_id: string;
+      addressee_id: string;
+      status?: 'pending' | 'accepted';
+    };
+    Update: { status?: 'pending' | 'accepted' };
+  };
+
+  // ---------------------------------------------------------------------------
+  // event_phase_details  (Migration 014 — trip events)
+  // ---------------------------------------------------------------------------
+  event_phase_details: {
+    Row: {
+      id: string;
+      event_id: string;
+      phase_id: string;
+      /** Which calendar date this phase is scheduled for. */
+      scheduled_date: string | null;           // ISO date 'YYYY-MM-DD'
+      /** Accommodation name (trip activity type). */
+      accommodation_name: string | null;
+      /** Accommodation booking / map URL (trip activity type). */
+      accommodation_url: string | null;
+      /** Extensible metadata for other activity types. */
+      context: Record<string, unknown>;
+      created_at: string;
+    };
+    Insert: {
+      id?: string;
+      event_id: string;
+      phase_id: string;
+      scheduled_date?: string | null;
+      accommodation_name?: string | null;
+      accommodation_url?: string | null;
+      context?: Record<string, unknown>;
+    };
+    Update: Partial<Tables<'event_phase_details'>['Insert']>;
+  };
+
+  // ---------------------------------------------------------------------------
+  // event_step_assignments  (Migration 014 — crew task ownership)
+  // ---------------------------------------------------------------------------
+  event_step_assignments: {
+    Row: {
+      event_id: string;
+      step_card_id: string;
+      user_id: string;
+      assigned_by: string | null;
+      created_at: string;
+    };
+    Insert: {
+      event_id: string;
+      step_card_id: string;
+      user_id: string;
+      assigned_by?: string | null;
+    };
+    Update: never;
+  };
+
+  // ---------------------------------------------------------------------------
   // profiles (already defined above)
   // ---------------------------------------------------------------------------
 };
@@ -942,7 +1059,8 @@ export type StepCard     = Tables<'step_cards'>['Row'];
 export type CodexEntry   = Tables<'codex_entries'>['Row'];
 export type Guild        = Tables<'guilds'>['Row'];
 export type GuildRole    = Tables<'guild_roles'>['Row'];
-export type GuildMember  = Tables<'guild_members'>['Row'];
+export type GuildMember      = Tables<'guild_members'>['Row'];
+export type GuildApplication = Tables<'guild_applications'>['Row'];
 export type GuideAccess  = Tables<'guide_access'>['Row'];
 export type GuildEvent   = Tables<'guild_events'>['Row'];
 export type Tag          = Tables<'tags'>['Row'];
@@ -953,6 +1071,9 @@ export type EventStepState     = Tables<'event_step_states'>['Row'];
 export type EventStepAddition  = Tables<'event_step_additions'>['Row'];
 export type ChatThread         = Tables<'chat_threads'>['Row'];
 export type ChatMessage        = Tables<'chat_messages'>['Row'];
+export type UserConnection     = Tables<'user_connections'>['Row'];
+export type EventPhaseDetail   = Tables<'event_phase_details'>['Row'];
+export type EventStepAssignment = Tables<'event_step_assignments'>['Row'];
 export type UserStepNote       = Tables<'user_step_notes'>['Row'];
 
 // Insert shorthand aliases.

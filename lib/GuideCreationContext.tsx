@@ -88,6 +88,10 @@ export type DraftGuide = {
    * step is marked done. Saved to guides.auto_advance_default on publish.
    */
   auto_advance_default: boolean;
+  /** Activity category (e.g. 'trip', 'outdoor', 'social'). Drives context UI on events. */
+  activity_type: string;
+  /** Tag IDs selected from the canonical tags table. Written to guide_tags on publish. */
+  selectedTagIds: string[];
 };
 
 // ---------------------------------------------------------------------------
@@ -143,6 +147,8 @@ const DEFAULT_GUIDE: DraftGuide = {
   difficulty_level:      '',
   duration_estimate:     '',
   auto_advance_default:  false,
+  activity_type:         'general',
+  selectedTagIds:        [],
 };
 
 // ---------------------------------------------------------------------------
@@ -267,6 +273,12 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
     const { data: g } = await supabase.from('guides').select('*').eq('id', guideId).single();
     if (!g) throw new Error('Guide not found.');
 
+    // Fetch existing guide_tags alongside the guide data
+    const { data: existingTags } = await supabase
+      .from('guide_tags')
+      .select('tag_id')
+      .eq('guide_id', guideId);
+
     setGuideState({
       title:                 g.title ?? '',
       description:           g.description ?? '',
@@ -278,6 +290,8 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
       difficulty_level:      g.difficulty_level ?? '',
       duration_estimate:     g.duration_estimate ?? '',
       auto_advance_default:  g.auto_advance_default ?? false,
+      activity_type:         (g as any).activity_type ?? 'general',
+      selectedTagIds:        (existingTags ?? []).map((t: any) => t.tag_id as string),
     });
 
     // Fetch phases with steps, ordered by phase_index
@@ -392,9 +406,18 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
           difficulty_level:      guide.difficulty_level.trim() || null,
           duration_estimate:     guide.duration_estimate.trim() || null,
           auto_advance_default:  guide.auto_advance_default,
-        })
+          activity_type:         guide.activity_type || 'general',
+        } as any)
         .eq('id', editingGuideId);
       if (updateErr) throw updateErr;
+
+      // Re-sync tags: delete existing, insert current selection
+      await supabase.from('guide_tags').delete().eq('guide_id', editingGuideId);
+      if (guide.selectedTagIds.length > 0) {
+        await supabase.from('guide_tags').insert(
+          guide.selectedTagIds.map(tagId => ({ guide_id: editingGuideId, tag_id: tagId })),
+        );
+      }
 
       // Delete all existing phases (cascades to step_cards via FK)
       await supabase.from('phases').delete().eq('guide_id', editingGuideId);
@@ -441,13 +464,21 @@ export function GuideCreationProvider({ children }: { children: React.ReactNode 
         difficulty_level:      guide.difficulty_level.trim() || null,
         duration_estimate:     guide.duration_estimate.trim() || null,
         auto_advance_default:  guide.auto_advance_default,
+        activity_type:         guide.activity_type || 'general',
         original_architect_id: user.id, // Originator — preserved through all forks
-      })
+      } as any)
       .select()
       .single();
 
     if (guideError) throw guideError;
     const guideId = insertedGuide.id;
+
+    // Insert guide_tags for selected tags
+    if (guide.selectedTagIds.length > 0) {
+      await supabase.from('guide_tags').insert(
+        guide.selectedTagIds.map(tagId => ({ guide_id: guideId, tag_id: tagId })),
+      );
+    }
 
     for (let pIdx = 0; pIdx < phases.length; pIdx++) {
       const draftPhase = phases[pIdx];

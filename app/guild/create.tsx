@@ -12,6 +12,7 @@ export default function CreateGuildScreen() {
 
   const [name, setName] = useState('');
   const [handle, setHandle] = useState('');
+  const [description, setDescription] = useState('');
   const [privacy, setPrivacy] = useState<'public' | 'private' | 'secret'>('public');
   const [loading, setLoading] = useState(false);
 
@@ -34,9 +35,10 @@ export default function CreateGuildScreen() {
       .insert({
         name,
         handle: handle.toLowerCase(),
+        description: description.trim() || null,
         privacy_setting: privacy,
         owner_id: user.id,
-        created_by: user.id
+        created_by: user.id,
       })
       .select()
       .single();
@@ -46,10 +48,8 @@ export default function CreateGuildScreen() {
     if (error) {
       Alert.alert("Error", error.message);
     } else {
-      // 3. Success! 
-      // We will redirect to the [id] page later. For now, go back to profile.
-      Alert.alert("Success", "Guild established!");
-      router.back(); 
+      // Navigate directly to the new guild hall.
+      router.replace({ pathname: '/guild/[id]', params: { id: data.id } });
     }
   }
 
@@ -89,6 +89,18 @@ export default function CreateGuildScreen() {
              autoCapitalize="none"
            />
         </View>
+
+        {/* DESCRIPTION INPUT */}
+        <Text style={[styles.label, { color: theme.text }]}>Description (optional)</Text>
+        <TextInput
+          style={[styles.input, { color: theme.text, borderColor: theme.tabIconDefault, height: 90, textAlignVertical: 'top' }]}
+          placeholder="What is your guild about?"
+          placeholderTextColor="#999"
+          value={description}
+          onChangeText={setDescription}
+          multiline
+          numberOfLines={3}
+        />
 
         {/* PRIVACY SELECTOR */}
         <Text style={[styles.label, { color: theme.text }]}>Privacy</Text>

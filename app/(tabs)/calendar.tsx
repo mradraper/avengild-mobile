@@ -58,11 +58,24 @@ type EventRow = {
   id: string;
   title: string;
   start_time: string | null;
+  end_time: string | null;
   guide_id: string | null;
+  creator_id: string;
   guide: {
     id: string;
     title: string;
     primary_location_name: string | null;
+  } | null;
+};
+
+type PendingInvitation = {
+  event_id: string;
+  event: {
+    id: string;
+    title: string;
+    start_time: string | null;
+    creator_id: string;
+    organiser: { full_name: string | null; username: string | null } | null;
   } | null;
 };
 
@@ -167,12 +180,13 @@ export default function CalendarScreen() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const [view,         setView]         = useState<CalendarView>('month');
-  const [selectedDate, setSelectedDate] = useState<Date>(today);
-  const [viewDate,     setViewDate]     = useState<Date>(today); // anchor for month/week nav
-  const [events,       setEvents]       = useState<EventRow[]>([]);
-  const [loading,      setLoading]      = useState(true);
-  const [userId,       setUserId]       = useState<string | null>(null);
+  const [view,               setView]               = useState<CalendarView>('month');
+  const [selectedDate,       setSelectedDate]       = useState<Date>(today);
+  const [viewDate,           setViewDate]           = useState<Date>(today); // anchor for month/week nav
+  const [events,             setEvents]             = useState<EventRow[]>([]);
+  const [pendingInvitations, setPendingInvitations] = useState<PendingInvitation[]>([]);
+  const [loading,            setLoading]            = useState(true);
+  const [userId,             setUserId]             = useState<string | null>(null);
 
   const dayScrollRef = useRef<ScrollView>(null);
 
@@ -186,12 +200,28 @@ export default function CalendarScreen() {
   for (const evt of events) {
     if (!evt.start_time) {
       tbdEvents.push(evt);
+    } else if (evt.end_time) {
+      // Multi-day event: add to every date it spans
+      const startD = new Date(evt.start_time);
+      const endD   = new Date(evt.end_time);
+      startD.setHours(0, 0, 0, 0);
+      endD.setHours(0, 0, 0, 0);
+      const cursor = new Date(startD);
+      while (cursor <= endD) {
+        const k = dateKey(cursor);
+        if (!eventsByDate.has(k)) eventsByDate.set(k, []);
+        eventsByDate.get(k)!.push(evt);
+        cursor.setDate(cursor.getDate() + 1);
+      }
     } else {
       const k = keyFromISO(evt.start_time);
       if (!eventsByDate.has(k)) eventsByDate.set(k, []);
       eventsByDate.get(k)!.push(evt);
     }
   }
+
+  // Separate multi-day events for span rendering in month view
+  const multiDayEvents = events.filter(e => e.start_time && e.end_time);
 
   // Sort events within each day by start_time
   for (const [, list] of eventsByDate) {
@@ -220,17 +250,35 @@ export default function CalendarScreen() {
         }
         setUserId(user.id);
 
+        // Step 1: fetch event IDs where the user is a confirmed/accepted participant
+        // (excludes 'invited'/'declined' so only events they're actually doing appear on calendar)
+        const { data: participantRows } = await supabase
+          .from('event_participants')
+          .select('event_id')
+          .eq('user_id', user.id)
+          .in('status', ['confirmed', 'active']);
+
+        const participantEventIds = (participantRows ?? []).map((r: any) => r.event_id as string);
+
+        // Step 2: fetch all events the user created OR is a confirmed participant in.
         // Explicitly hint the guide_id FK to avoid PGRST201 ambiguous join.
-        // `events` has two FKs to `guides`: guide_id and published_guide_id.
-        // The `!events_guide_id_fkey` suffix pins the join to the correct one.
-        const { data, error } = await supabase
+        let query = supabase
           .from('events')
           .select(`
-            id, title, start_time, guide_id,
+            id, title, start_time, end_time, guide_id, creator_id,
             guide:guides!events_guide_id_fkey(id, title, primary_location_name)
           `)
-          .eq('creator_id', user.id)
           .order('start_time', { ascending: true, nullsFirst: false });
+
+        if (participantEventIds.length > 0) {
+          query = query.or(
+            `creator_id.eq.${user.id},id.in.(${participantEventIds.join(',')})`,
+          );
+        } else {
+          query = query.eq('creator_id', user.id);
+        }
+
+        const { data, error } = await query;
 
         if (error) {
           console.error('[Calendar] load error:', error);
@@ -238,8 +286,22 @@ export default function CalendarScreen() {
           return;
         }
 
+        // Step 3: fetch pending invitations (status='invited') separately for the inbox
+        const { data: inviteData } = await supabase
+          .from('event_participants')
+          .select(`
+            event_id,
+            event:events!event_participants_event_id_fkey(
+              id, title, start_time, creator_id,
+              organiser:profiles!events_creator_id_fkey(full_name, username)
+            )
+          `)
+          .eq('user_id', user.id)
+          .eq('status', 'invited');
+
         if (active) {
           setEvents((data ?? []) as EventRow[]);
+          setPendingInvitations((inviteData ?? []) as PendingInvitation[]);
           setLoading(false);
         }
       }
@@ -397,56 +459,119 @@ export default function CalendarScreen() {
           ))}
         </View>
 
-        {/* Month grid */}
-        <View style={styles.monthGrid}>
-          {cells.map((day, idx) => {
-            if (day === null) {
-              return (
-                <View key={`pad-${idx}`} style={{ width: cellW, height: 52 }} />
-              );
+        {/* Month grid — rendered row by row so we can overlay multi-day span bars */}
+        <View>
+          {Array.from({ length: cells.length / 7 }, (_, rowIdx) => {
+            const weekCells = cells.slice(rowIdx * 7, rowIdx * 7 + 7);
+
+            // Compute span bars for multi-day events that overlap this week
+            const ROW_HEIGHT = 64; // must match cell height below
+            const SPAN_H     = 14;
+            const SPAN_TOP   = 38; // below day circle
+            const spanBars: Array<{ evt: EventRow; startCol: number; endCol: number }> = [];
+            for (const evt of multiDayEvents) {
+              const evtStart = new Date(evt.start_time!);
+              const evtEnd   = new Date(evt.end_time!);
+              evtStart.setHours(0, 0, 0, 0);
+              evtEnd.setHours(0, 0, 0, 0);
+
+              // Find which columns of this week row the event occupies
+              let startCol = -1;
+              let endCol   = -1;
+              weekCells.forEach((d, ci) => {
+                if (d === null) return;
+                const cellDate = ymd(year, month, d);
+                if (cellDate >= evtStart && cellDate <= evtEnd) {
+                  if (startCol === -1) startCol = ci;
+                  endCol = ci;
+                }
+              });
+              if (startCol !== -1) {
+                spanBars.push({ evt, startCol, endCol });
+              }
             }
 
-            const d   = ymd(year, month, day);
-            const key = dateKey(d);
-            const isTod = key === todayKey;
-            const isSel = key === selKey;
-            const dayEvts = eventsByDate.get(key) ?? [];
-
             return (
-              <TouchableOpacity
-                key={key}
-                style={{ width: cellW, height: 52, alignItems: 'center', paddingTop: 4 }}
-                onPress={() => {
-                  setSelectedDate(d);
-                  setViewDate(d);
-                }}
-                activeOpacity={0.7}
-              >
-                <View style={[
-                  styles.dayCircle,
-                  isTod && { backgroundColor: theme.tint },
-                  isSel && !isTod && { backgroundColor: isDark ? '#1e2330' : '#e8e8e8' },
-                ]}>
-                  <Text style={[
-                    styles.dayNumber,
-                    { color: isTod ? '#fff' : theme.text },
-                    isSel && !isTod && { color: theme.tint, fontWeight: '700' },
-                  ]}>
-                    {day}
-                  </Text>
-                </View>
-                {/* Event dots */}
-                {dayEvts.length > 0 && (
-                  <View style={styles.dotRow}>
-                    {dayEvts.slice(0, 3).map((_, di) => (
-                      <View
-                        key={di}
-                        style={[styles.dot, { backgroundColor: isTod ? '#fff' : theme.tint }]}
-                      />
-                    ))}
-                  </View>
-                )}
-              </TouchableOpacity>
+              <View key={rowIdx} style={{ flexDirection: 'row', height: ROW_HEIGHT, position: 'relative' }}>
+                {/* Day cells */}
+                {weekCells.map((day, colIdx) => {
+                  if (day === null) {
+                    return <View key={`pad-${rowIdx}-${colIdx}`} style={{ width: cellW, height: ROW_HEIGHT }} />;
+                  }
+                  const d   = ymd(year, month, day);
+                  const key = dateKey(d);
+                  const isTod = key === todayKey;
+                  const isSel = key === selKey;
+                  // Show a dot for single-day events only (multi-day have span bars)
+                  const singleDayEvts = (eventsByDate.get(key) ?? []).filter(e => !e.end_time);
+
+                  return (
+                    <TouchableOpacity
+                      key={key}
+                      style={{ width: cellW, height: ROW_HEIGHT, alignItems: 'center', paddingTop: 4 }}
+                      onPress={() => { setSelectedDate(d); setViewDate(d); }}
+                      activeOpacity={0.7}
+                    >
+                      <View style={[
+                        styles.dayCircle,
+                        isTod && { backgroundColor: theme.tint },
+                        isSel && !isTod && { backgroundColor: isDark ? '#1e2330' : '#e8e8e8' },
+                      ]}>
+                        <Text style={[
+                          styles.dayNumber,
+                          { color: isTod ? '#fff' : theme.text },
+                          isSel && !isTod && { color: theme.tint, fontWeight: '700' },
+                        ]}>
+                          {day}
+                        </Text>
+                      </View>
+                      {singleDayEvts.length > 0 && (
+                        <View style={styles.dotRow}>
+                          {singleDayEvts.slice(0, 3).map((_, di) => (
+                            <View key={di} style={[styles.dot, { backgroundColor: isTod ? '#fff' : theme.tint }]} />
+                          ))}
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+
+                {/* Multi-day span bars */}
+                {spanBars.map(({ evt, startCol, endCol }, si) => {
+                  const isStart  = new Date(evt.start_time!).getDate() === weekCells[startCol];
+                  const isEnd    = new Date(evt.end_time!).getDate() === weekCells[endCol];
+                  const barLeft  = startCol * cellW + (isStart ? 3 : 0);
+                  const barRight = (endCol + 1) * cellW - (isEnd ? 3 : 0);
+                  const barW     = barRight - barLeft;
+                  return (
+                    <View
+                      key={`${evt.id}-${si}`}
+                      style={{
+                        position:        'absolute',
+                        top:             SPAN_TOP + si * (SPAN_H + 2),
+                        left:            barLeft,
+                        width:           barW,
+                        height:          SPAN_H,
+                        backgroundColor: 'rgba(188,138,47,0.22)',
+                        borderRadius:    isStart && isEnd ? 6 : isStart ? 6 : isEnd ? 6 : 0,
+                        borderTopLeftRadius:     isStart ? 6 : 0,
+                        borderBottomLeftRadius:  isStart ? 6 : 0,
+                        borderTopRightRadius:    isEnd   ? 6 : 0,
+                        borderBottomRightRadius: isEnd   ? 6 : 0,
+                        justifyContent: 'center',
+                        paddingHorizontal: 3,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {isStart && (
+                        <Text style={{ fontSize: 9, fontWeight: '700', color: theme.tint }} numberOfLines={1}>
+                          {evt.title}
+                        </Text>
+                      )}
+                    </View>
+                  );
+                })}
+              </View>
             );
           })}
         </View>
@@ -668,6 +793,18 @@ export default function CalendarScreen() {
 
   /** Compact event row used in Month panel + Week view list. */
   function renderEventRow(evt: EventRow) {
+    const timeLabel = evt.end_time
+      ? (() => {
+          const s = new Date(evt.start_time!);
+          const e = new Date(evt.end_time!);
+          const sameMonth = s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear();
+          if (sameMonth) {
+            return `${s.toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })} – ${e.getDate()}`;
+          }
+          return `${s.toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })} – ${e.toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })}`;
+        })()
+      : formatTime(evt.start_time);
+
     return (
       <Pressable
         key={evt.id}
@@ -691,7 +828,7 @@ export default function CalendarScreen() {
           ) : null}
         </View>
         <Text style={[styles.eventRowTime, { color: theme.tint }]}>
-          {formatTime(evt.start_time)}
+          {timeLabel}
         </Text>
       </Pressable>
     );
@@ -757,6 +894,41 @@ export default function CalendarScreen() {
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       {renderHeader()}
+
+      {/* Invitation inbox — shown above the calendar when there are pending invites */}
+      {!loading && pendingInvitations.length > 0 && (
+        <View style={[styles.inviteInbox, { borderBottomColor: isDark ? '#1e2330' : '#e8e8e8' }]}>
+          <Text style={[styles.inviteInboxTitle, { color: subText }]}>
+            PENDING INVITATIONS
+          </Text>
+          {pendingInvitations.map((inv) => {
+            if (!inv.event) return null;
+            const organiser = inv.event.organiser?.full_name ?? inv.event.organiser?.username ?? 'Someone';
+            const dateStr   = inv.event.start_time
+              ? new Date(inv.event.start_time).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })
+              : 'TBD';
+            return (
+              <Pressable
+                key={inv.event_id}
+                style={[styles.inviteRow, { backgroundColor: theme.cardBackground }]}
+                onPress={() => router.push({ pathname: '/event/[id]', params: { id: inv.event_id } })}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.inviteRowTitle, { color: theme.text }]} numberOfLines={1}>
+                    {inv.event.title}
+                  </Text>
+                  <Text style={[styles.inviteRowMeta, { color: subText }]}>
+                    {organiser}  ·  {dateStr}
+                  </Text>
+                </View>
+                <View style={[styles.invitePill, { backgroundColor: theme.tint }]}>
+                  <Text style={styles.invitePillText}>View</Text>
+                </View>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
 
       {loading ? (
         <View style={styles.centred}>
@@ -927,6 +1099,37 @@ const styles = StyleSheet.create({
     marginHorizontal: 14,
   },
   tbdText: { fontSize: 12 },
+
+  // ── Invitation inbox ─────────────────────────────────────────────────────
+  inviteInbox: {
+    borderBottomWidth: 1,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+  inviteInboxTitle: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginBottom: 8,
+  },
+  inviteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 6,
+    gap: 10,
+  },
+  inviteRowTitle: { fontSize: 14, fontWeight: '700' },
+  inviteRowMeta:  { fontSize: 12, marginTop: 2 },
+  invitePill: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  invitePillText: { color: '#fff', fontSize: 12, fontWeight: '700' },
 
   // ── Generic empty / centred ──────────────────────────────────────────────
   centred:    { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },

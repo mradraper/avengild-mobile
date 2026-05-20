@@ -21,6 +21,7 @@ import Colors from '@/constants/Colors';
 import { useGuideCreation } from '@/lib/GuideCreationContext';
 import type { Enums } from '@/lib/database.types';
 import { pickAndUploadHeroImage } from '@/lib/mediaUpload';
+import { supabase } from '@/lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
@@ -107,6 +108,18 @@ export default function GuideInfoScreen() {
 
   const { guide, setGuide, loadExistingGuide, resetDraft } = useGuideCreation();
   const [uploadingHero, setUploadingHero] = useState(false);
+
+  // Canonical activity tags from the tags table
+  const [availableTags, setAvailableTags] = useState<{ id: string; label: string }[]>([]);
+
+  useEffect(() => {
+    supabase
+      .from('tags')
+      .select('id, label')
+      .eq('tag_type', 'activity')
+      .order('label', { ascending: true })
+      .then(({ data }) => { if (data) setAvailableTags(data); });
+  }, []);
 
   // Load the existing guide data when entering edit mode
   useEffect(() => {
@@ -290,6 +303,64 @@ export default function GuideInfoScreen() {
             />
           </View>
         </View>
+
+        {/* Activity Type */}
+        <Text style={[styles.fieldLabel, { color: theme.text }]}>Activity Type</Text>
+        <Text style={[styles.fieldHint, { color: subText }]}>
+          The category that best describes this Guide. Drives context fields on events.
+        </Text>
+        <PillSelector<string>
+          options={[
+            { value: 'general',  label: 'General' },
+            { value: 'trip',     label: 'Trip' },
+            { value: 'outdoor',  label: 'Outdoor' },
+            { value: 'sport',    label: 'Sport' },
+            { value: 'cultural', label: 'Cultural' },
+            { value: 'social',   label: 'Social' },
+            { value: 'cooking',  label: 'Cooking' },
+            { value: 'fitness',  label: 'Fitness' },
+          ]}
+          value={guide.activity_type}
+          onChange={v => setGuide({ activity_type: v })}
+          theme={theme}
+          isDark={isDark}
+        />
+
+        {/* Tags */}
+        {availableTags.length > 0 && (
+          <>
+            <Text style={[styles.fieldLabel, { color: theme.text }]}>Tags</Text>
+            <Text style={[styles.fieldHint, { color: subText }]}>
+              Select all that apply. Used for discovery and filtering.
+            </Text>
+            <View style={pilStyles.row}>
+              {availableTags.map(tag => {
+                const isSelected = guide.selectedTagIds.includes(tag.id);
+                return (
+                  <TouchableOpacity
+                    key={tag.id}
+                    onPress={() => {
+                      const next = isSelected
+                        ? guide.selectedTagIds.filter(id => id !== tag.id)
+                        : [...guide.selectedTagIds, tag.id];
+                      setGuide({ selectedTagIds: next });
+                    }}
+                    activeOpacity={0.75}
+                    style={StyleSheet.flatten([
+                      pilStyles.pill,
+                      { borderColor: isSelected ? theme.tint : (isDark ? '#1e2330' : '#ddd') },
+                      isSelected && { backgroundColor: isDark ? 'rgba(188,138,47,0.12)' : 'rgba(55,94,63,0.08)' },
+                    ])}
+                  >
+                    <Text style={[pilStyles.pillLabel, { color: isSelected ? theme.tint : (isDark ? '#aaa' : '#666') }]}>
+                      {tag.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </>
+        )}
 
         {/* Divider */}
         <View style={[styles.divider, { backgroundColor: isDark ? '#1e2330' : '#e8e8e8' }]} />

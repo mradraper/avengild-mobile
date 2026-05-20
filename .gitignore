@@ -39,3 +39,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Python virtual environment scripts (accidentally placed in project root)
+*.ps1
+*.venv

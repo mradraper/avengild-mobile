@@ -6,7 +6,9 @@
  * UI: a full calendar-first date/time picker:
  *   1. Month grid   — tap any day to select it; existing events show as dots
  *   2. Time picker  — hour grid (6 AM – 11 PM) appears once a day is chosen
- *   3. TBD option   — "Plan for later" skips the date and creates the event
+ *   3. Multi-day toggle — "This is a multi-day trip" reveals an end-date
+ *                     calendar so the organiser can set a date range.
+ *   4. TBD option   — "Plan for later" skips the date and creates the event
  *                     without a start_time; the date can be set from inside
  *                     the Event Detail screen after the group decides.
  *
@@ -108,6 +110,13 @@ export default function ScheduleScreen() {
   const [selectedHour, setSelectedHour] = useState<number | null>(null);
   const [saving,       setSaving]       = useState(false);
 
+  // Multi-day trip: end date (optional)
+  const [isMultiDay,      setIsMultiDay]      = useState(false);
+  const [endDay,          setEndDay]          = useState<Date | null>(null);
+  // end-date calendar navigation — starts in the same month as selectedDay
+  const [endViewYear,     setEndViewYear]     = useState(today.getFullYear());
+  const [endViewMonth,    setEndViewMonth]    = useState(today.getMonth());
+
   // Existing event dates (for dots on the calendar grid)
   const [busyDays, setBusyDays] = useState<Set<string>>(new Set());
 
@@ -151,8 +160,22 @@ export default function ScheduleScreen() {
 
   function selectDay(d: Date) {
     setSelectedDay(d);
+    // Sync end-date calendar to the same month so it opens nearby
+    setEndViewYear(d.getFullYear());
+    setEndViewMonth(d.getMonth());
     // Preserve previously chosen hour, or default to noon
     if (selectedHour === null) setSelectedHour(12);
+    // Clear end-day if it's now before the new start
+    if (endDay && endDay < d) setEndDay(null);
+  }
+
+  function prevEndMonth() {
+    if (endViewMonth === 0) { setEndViewYear(y => y - 1); setEndViewMonth(11); }
+    else setEndViewMonth(m => m - 1);
+  }
+  function nextEndMonth() {
+    if (endViewMonth === 11) { setEndViewYear(y => y + 1); setEndViewMonth(0); }
+    else setEndViewMonth(m => m + 1);
   }
 
   // -------------------------------------------------------------------------
@@ -184,6 +207,14 @@ export default function ScheduleScreen() {
 
       const finalDate = isTbd ? null : buildDate();
 
+      // Build end_time: end of the last day (23:59:59) if multi-day
+      let endTime: string | null = null;
+      if (isMultiDay && endDay) {
+        const d = new Date(endDay);
+        d.setHours(23, 59, 59, 0);
+        endTime = d.toISOString();
+      }
+
       // 1. Create the event row
       const { data: event, error: eventError } = await supabase
         .from('events')
@@ -192,6 +223,7 @@ export default function ScheduleScreen() {
           creator_id:       user.id,
           title:            guideTitle,
           start_time:       finalDate?.toISOString() ?? null,
+          end_time:         endTime,
           is_published:     false,
           removed_step_ids: removedIds,
         })
@@ -243,8 +275,9 @@ export default function ScheduleScreen() {
           );
       }
 
-      // Navigate to the Event Detail screen so the user can share the link
-      router.dismissAll();
+      // Navigate to the Event Detail screen so the user can share the link.
+      // replace() clears this step from the back stack; the earlier plan steps
+      // (search → adapt → invite) are gone once the user navigates away.
       router.replace({ pathname: '/event/[id]', params: { id: event.id } });
     } catch (err: any) {
       console.error('[Schedule] handleConfirm error:', err);
@@ -389,12 +422,99 @@ export default function ScheduleScreen() {
           </View>
         )}
 
+        {/* ---- MULTI-DAY TOGGLE (shown once a start day+time is chosen) ---- */}
+        {canConfirm && (
+          <TouchableOpacity
+            style={[styles.multiDayToggle, { backgroundColor: isDark ? '#1a1f2e' : '#f2f2f2' }]}
+            onPress={() => { setIsMultiDay(v => !v); if (!isMultiDay) setEndDay(null); }}
+            activeOpacity={0.8}
+          >
+            <View style={[styles.multiDayCheck, isMultiDay && { backgroundColor: theme.tint, borderColor: theme.tint }]}>
+              {isMultiDay && <Ionicons name="checkmark" size={13} color="#fff" />}
+            </View>
+            <Text style={[styles.multiDayLabel, { color: theme.text }]}>
+              Multi-day trip (set an end date)
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        {/* ---- END DATE CALENDAR (shown when multi-day is toggled on) ---- */}
+        {isMultiDay && canConfirm && (() => {
+          const endCellW      = Math.floor((width - 32) / 7);
+          const endNumDays    = daysInMonth(endViewYear, endViewMonth);
+          const endStartDay   = firstWeekday(endViewYear, endViewMonth);
+          const endCells: (number | null)[] = [
+            ...Array(endStartDay).fill(null),
+            ...Array.from({ length: endNumDays }, (_, i) => i + 1),
+          ];
+          const startKey  = selectedDay ? dateKey(selectedDay) : null;
+          const endSelKey = endDay ? dateKey(endDay) : null;
+
+          return (
+            <View style={styles.endDateSection}>
+              <Text style={[styles.sectionLabel, { color: subText }]}>END DATE</Text>
+              <View style={styles.monthHeader}>
+                <TouchableOpacity onPress={prevEndMonth} style={styles.monthNav} hitSlop={8}>
+                  <Ionicons name="chevron-back" size={22} color={theme.tint} />
+                </TouchableOpacity>
+                <Text style={[styles.monthTitle, { color: theme.text }]}>
+                  {fmtMonth(endViewYear, endViewMonth)}
+                </Text>
+                <TouchableOpacity onPress={nextEndMonth} style={styles.monthNav} hitSlop={8}>
+                  <Ionicons name="chevron-forward" size={22} color={theme.tint} />
+                </TouchableOpacity>
+              </View>
+              <View style={styles.dayRow}>
+                {DAY_NAMES.map(n => (
+                  <Text key={n} style={[styles.dayName, { width: endCellW, color: subText }]}>{n}</Text>
+                ))}
+              </View>
+              <View style={styles.grid}>
+                {endCells.map((day, idx) => {
+                  if (day === null) return <View key={`e-blank-${idx}`} style={{ width: endCellW, height: endCellW }} />;
+                  const cellDate   = ymd(endViewYear, endViewMonth, day);
+                  const key        = dateKey(cellDate);
+                  // End day must be after (or equal to) start day
+                  const isBeforeStart = selectedDay ? cellDate < selectedDay : false;
+                  const isSelStart = key === startKey;
+                  const isSelEnd   = key === endSelKey;
+
+                  return (
+                    <TouchableOpacity
+                      key={key}
+                      style={[
+                        styles.cell,
+                        { width: endCellW, height: endCellW },
+                        isSelEnd   && { backgroundColor: theme.tint, borderRadius: endCellW / 2 },
+                        isSelStart && !isSelEnd && { borderWidth: 1.5, borderColor: theme.tint, borderRadius: endCellW / 2 },
+                      ]}
+                      onPress={() => !isBeforeStart && setEndDay(cellDate)}
+                      disabled={isBeforeStart}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[
+                        styles.cellText,
+                        { color: isBeforeStart ? '#ccc' : isSelEnd ? '#fff' : theme.text },
+                      ]}>
+                        {day}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          );
+        })()}
+
         {/* ---- SELECTED SUMMARY ---- */}
         {canConfirm && (
           <View style={[styles.summaryRow, { backgroundColor: isDark ? '#1a1f2e' : '#f2f2f2' }]}>
             <Ionicons name="calendar-outline" size={18} color={theme.tint} />
             <Text style={[styles.summaryText, { color: theme.text }]}>
               {formatSelected(finalDate)}
+              {isMultiDay && endDay ? (
+                ` → ${endDay.toLocaleDateString('en-CA', { month: 'long', day: 'numeric' })}`
+              ) : ''}
             </Text>
           </View>
         )}
@@ -526,6 +646,28 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   tbdBtnText: { fontSize: 14 },
+
+  // Multi-day toggle
+  multiDayToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 10,
+    padding: 14,
+    marginTop: 12,
+  },
+  multiDayCheck: {
+    width: 22,
+    height: 22,
+    borderRadius: 5,
+    borderWidth: 2,
+    borderColor: '#aaa',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  multiDayLabel: { fontSize: 15, fontWeight: '600', flex: 1 },
+
+  endDateSection: { marginTop: 24 },
 
   footer: {
     paddingHorizontal: 16,
